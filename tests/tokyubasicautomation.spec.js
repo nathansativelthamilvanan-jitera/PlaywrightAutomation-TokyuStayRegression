@@ -52,7 +52,7 @@ const info =
     fixedPassword:"Newpassword1",
 
     //MEMBERSHIP REGISTRATION
-    memberReg_Email:"isagowry@otona.uk", //Each time "Member Registration" test case is run, update this string
+    memberReg_Email:"mugwardad@pngk.uk", //Each time "Member Registration" test case is run, update this string
     memberReg_Password:"Newpassword1",
     memberReg_FirstName:"Sativel",
     memberReg_LastName:"Nathan",
@@ -84,7 +84,7 @@ const info =
 
     //RESET PASSWORD
     resetPW_Email:"kithayfig@otona.uk",
-    resetPW_Password:"Newpassword11", //Each time "Reset Password" test case is run, update this string
+    resetPW_Password:"Newpassword16", //Each time "Reset Password" test case is run, update this string
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -92,8 +92,8 @@ const info =
 
     //CREATE, EDIT, CANCEL RESERVATION
     hotelBranch: "Tokyu Stay Ginza(staging)",
-    checkInDate: "December 20, 2025",
-    checkOutDate: "December 21, 2025",
+    checkInDate: "May 8, 2026",
+    checkOutDate: "May 9, 2026",
     arrivalTime: "22:00"
 }
 
@@ -117,16 +117,20 @@ async function Login(arg_page)
 }
 
 //Tests
+
+//STATUS: OK
 test('Tokyu Stay - Login', async ({page})=>
 {
     await Login(page)
 });
 
+
+//STATUS: OK
 test('Tokyu Stay - Logout', async({page})=>
 {
     const returnedPage = await Login(page)
 
-    await returnedPage.locator("div div a.items-center").click()//Click Account name
+    await returnedPage.locator("div div a.items-center").nth(2).click()//Click Account name
     await returnedPage.getByRole("listitem").last().click()//Click Logout in the side list
     await returnedPage.getByRole("button", {name: "Close Modal"}).click()
     await returnedPage.getByRole("listitem").last().click()
@@ -136,7 +140,7 @@ test('Tokyu Stay - Logout', async({page})=>
     const loginBtnVisible = await returnedPage.getByRole("button", {name: "Log In"}).isVisible()
     await expect(loginBtnVisible).toBeTruthy()
 
-    await returnedPage.pause()
+    //await returnedPage.pause()
 
 
 });
@@ -151,7 +155,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await page1.goto("https://stg.reservation.tokyustay.co.jp/en");
     await expect(page1).toHaveTitle('Accommodation reservations | Tokyu Stay [Official]');
 
-    await page1.locator("button[href*='mypage/register']").click()
+    await page1.locator("a[href*='mypage/register']").click()
     
     //Ensure SmartClub page language is default Japanese
     await page1.waitForTimeout(3*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
@@ -236,7 +240,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 
     await expect(page3).toHaveURL("https://stg.reservation.tokyustay.co.jp/en")
 
-    await page3.pause()
+    //await page3.pause()
 
 });
 
@@ -264,7 +268,7 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page1.locator(".p-header__translate__lang").first().click()
     
 
-    await page1.getByPlaceholder("例）user@smartclub.tokyu-rs.co.jp").fill(userEmail_ResetPassword)
+    await page1.getByPlaceholder("例）user@smartclub.tokyu-rs.co.jp").fill(info.resetPW_Email)
     await page1.getByRole("button", {name: "パスワード再発行 / Send email"}).click()
     await expect(page1).toHaveURL("https://test-smartclub.metroengines.jp/mypage/password/send/mail")
     
@@ -276,8 +280,8 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await instAddrPage.locator(".mastermenuicon").first().click()//Config
     await instAddrPage.locator("a[href*='pagemode_login']").click()//Account
     await instAddrPage.locator("#link_loginform").click()
-    await instAddrPage.getByPlaceholder("AccountID").fill(instAddrAccountID)
-    await instAddrPage.locator("#user_password").fill(instAddrPassword)
+    await instAddrPage.getByPlaceholder("AccountID").fill(info.instAddrAccountID)
+    await instAddrPage.locator("#user_password").fill(info.instAddrPassword)
     await instAddrPage.locator("a[href*='checkLogin()']").click()
     await instAddrPage.locator("#area-confirm-dialog-button-ok").click()
 
@@ -293,16 +297,17 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
 
     //PAGE 2
     //Ensure SmartClub page language is default Japanese
-    await page1.waitForTimeout(2*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
+    await page1.waitForTimeout(4*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
     const btn2 = page2.locator("button.p-header__translate__button");
     await expect(btn2).toBeEnabled();     // ensures hydration done
     await expect(btn2).toBeInViewport();  // ensures no overlays
     await btn2.click();
     await page2.locator(".p-header__translate__lang").first().click()
 
-    await page2.getByPlaceholder("新しいパスワード / New password").fill(userPassword_ResetPassword)
-    await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(userPassword_ResetPassword)
+    await page2.getByPlaceholder("新しいパスワード / New password").fill(info.resetPW_Password)
+    await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(info.resetPW_Password)
     await page2.getByRole("button", {name: "パスワード再発行 / Reset password"}).click()
+    await page1.waitForTimeout(4*1000)
     await expect(page2.locator("p.title")).toHaveText("パスワードを変更しました。")
 
     //PAGE 3
@@ -314,8 +319,8 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page3.getByRole("button", {name: "Log In"}).click()
     await expect(page3).toHaveURL("https://test-smartclub.metroengines.jp/mypage/login")
 
-    await page3.getByPlaceholder("アカウント名を入力 / Email").fill(userEmail_ResetPassword)
-    await page3.getByPlaceholder("パスワードを入力 / Password").fill(userPassword_ResetPassword)
+    await page3.getByPlaceholder("アカウント名を入力").fill(info.resetPW_Email)
+    await page3.getByPlaceholder("パスワードを入力").fill(info.resetPW_Password)
     await page3.locator("button.c-button").click()
     await page3.locator("div.space-x-2").waitFor()
     const pointVisible = await page3.locator("div.space-x-2").isVisible()
@@ -415,7 +420,8 @@ test('Tokyu Stay - Edit Profile', async({page})=>
     await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
     await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
 
-    await page1.locator('[name="arrivalTime"]').click()//Open the "Select Arrival Time" dropdown
+    await page1.waitForTimeout(4*1000)
+    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
     await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
 
     //ASSERTION: Check if the values in the fields match the same values as in Edit Profile
@@ -469,8 +475,8 @@ test('Tokyu Stay - Point Information', async({page})=>
     const arr_memberRanks = ["Regular Member", "Gold Member", "Platinum Member"]
     const returnedPage = await Login(page)
 
-    await returnedPage.locator("div div a.items-center").click()//Click Account name
-    await returnedPage.getByRole("listitem").locator("a[href*='point-information']").click()
+    await returnedPage.locator("a[href*='my-page/point-information']").click()//Click Account name
+    //await returnedPage.getByRole("listitem").locator("a[href*='point-information']").click()
 
     //ASSERTION: Check if the user's Membership Status is displayed as either Regular, Gold or Platinum Member
     for(let i = 0; i < arr_memberRanks.count; i++)
@@ -493,7 +499,9 @@ test('Tokyu Stay - Point Information', async({page})=>
     await returnedPage.pause()
 });
 
-test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
+
+//STATUS: TODO
+test('Tokyu Stay - Reservation History', async ({browser, page})=>
 {
     const context1 = await browser.newContext()
     const page1 = await Login(page)
@@ -501,7 +509,6 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
     //GO TO BOOKINGS TAB
     await page1.locator("a[href*='my-page/profile']").click()
     await page1.getByRole("listitem").locator("a[href*='reservations']").click()
-
     await expect(await page1.getByText("Bookings").first()).toBeVisible()
     await page1.waitForLoadState("load")
 
@@ -512,17 +519,9 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
     await page1.waitForLoadState("load")
     await page1.waitForSelector("span.uppercase")
 
-    //Verify if Booking Details are correct
-    await expect(page1.locator("div.mt-1").nth(4)).toHaveText(/\S+/) //Check if First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(5)).toHaveText(/\S+/) //Check if Last Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(6)).toHaveText(/\S+/) //Check if Guest First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(7)).toHaveText(/\S+/) //Check if Guest Last Name has any character displayed
-
-
-
-    //Check images
+    //COMPLETED - Check images
     let numOfImages = await page1.locator("div.flex.cursor-default.space-x-4").first().locator("> div").count();
-    console.log("numOfImages: " + numOfImages)
+    console.log("numOfImages COMPLETED: " + numOfImages)
 
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-pointer").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
@@ -530,10 +529,28 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
 
-    //Check QR Code
+
+    //COMPLETED - Check QR Code
     await page1.locator("a[href*='qrcode']:visible").click()
     await expect(page1.locator("div canvas:visible")).toBeVisible()
     await page1.locator("a[href*='#']").click()
+
+
+    //COMPLETED - Verify Booking Details
+    await expect(page1.locator("div.mt-1").nth(4)).toHaveText(/\S+/) //Check if First Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(5)).toHaveText(/\S+/) //Check if Last Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(6)).toHaveText(/\S+/) //Check if Guest First Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(7)).toHaveText(/\S+/) //Check if Guest Last Name has any character displayed
+    await expect(page1.locator("div.text-sm").nth(23)).toHaveText(/\S+/) //Check in Date
+    await expect(page1.locator("div.text-sm").nth(24)).toHaveText(/\S+/) //Check out Date
+    await expect(page1.locator("div.text-sm").nth(25)).toHaveText(/\S+/) //Plan Name
+    await expect(page1.locator("div.text-sm").nth(27)).toHaveText(/\S+/) //Estimated Arrival Time
+    await expect(page1.locator("div.text-sm").nth(29)).toHaveText(/\S+/) //Subtotal
+    await expect(page1.locator("div.text-sm").nth(30)).toHaveText(/\S+/) //Points Used
+    await expect(page1.locator("div.text-sm").nth(31)).toHaveText(/\S+/) //Membership Discount
+    await expect(page1.locator("div.text-sm").nth(32)).toHaveText(/\S+/) //Promotion Discount
+    await expect(page1.locator("div.text-sm").nth(33)).toHaveText(/\S+/) //Total Amount
+    await expect(page1.locator("label.text-xs").nth(29)).toHaveText(/\S+/) //Points returned after cancellation fine print text
 
 
     /*
@@ -558,9 +575,25 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
     await page1.waitForLoadState("load")
     await page1.waitForSelector("span.uppercase")
 
-    //Check images
+
+    //CANCELLED - Verify Booking Details
+    await expect(page1.locator("div.mt-1").nth(4)).toHaveText(/\S+/) //Check if First Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(5)).toHaveText(/\S+/) //Check if Last Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(6)).toHaveText(/\S+/) //Check if Guest First Name has any character displayed
+    await expect(page1.locator("div.mt-1").nth(7)).toHaveText(/\S+/) //Check if Guest Last Name has any character displayed
+    await expect(page1.locator("div.text-sm").nth(23)).toHaveText(/\S+/) //Check in Date
+    await expect(page1.locator("div.text-sm").nth(24)).toHaveText(/\S+/) //Check out Date
+    await expect(page1.locator("div.text-sm").nth(25)).toHaveText(/\S+/) //Plan Name
+    await expect(page1.locator("div.text-sm").nth(27)).toHaveText(/\S+/) //Estimated Arrival Time
+    await expect(page1.locator("div.text-sm").nth(29)).toHaveText(/\S+/) //Subtotal
+    await expect(page1.locator("div.text-sm").nth(30)).toHaveText(/\S+/) //Points Used
+    await expect(page1.locator("div.text-sm").nth(31)).toHaveText(/\S+/) //Membership Discount
+    await expect(page1.locator("div.text-sm").nth(32)).toHaveText(/\S+/) //Promotion Discount
+    await expect(page1.locator("div.text-sm").nth(33)).toHaveText(/\S+/) //Total Amount
+
+    //CANCELLED - Check images
     numOfImages = await page1.locator("div.flex.cursor-default.space-x-4").first().locator("> div").count();
-    console.log("numOfImages: " + numOfImages)
+    console.log("numOfImages CANCELLED: " + numOfImages)
 
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-pointer").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
@@ -568,9 +601,18 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
 
+    //CANCELLED - Check QR Code
+    await page1.locator("a[href*='qrcode']:visible").click()
+    await expect(page1.locator("div canvas:visible")).toBeVisible()
+    await page1.locator("a[href*='#']").click()
+
+
+
+
     //await page1.pause()
 
     //UPCOMING TAB
+    /*
     await page1.locator("a[href='/en/my-page/reservations']").first().click()
     await page1.locator("a[href='/en/my-page/reservations']").first().click()
     await page1.locator("div div button.items-start").first().click()
@@ -587,24 +629,24 @@ test.only('Tokyu Stay - Reservation History', async ({browser, page})=>
 
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
+    */
 
     //await page1.pause()
 
 })
 
 
-
 //STATUS: TODO
 //Figure out how to make Playwright click the button on the Payment Gateway modal at the last step
-test('Tokyu Stay - Logged In Reservation', async({page})=>
+test.only('Tokyu Stay - Logged In Reservation', async({page})=>
 {
     const page1 = await Login(page)
 
     await page1.locator(".relative.bg-white").last().click()
-    await page1.getByText("Tokyu Stay Shimbashi(staging)").click()
+    await page1.getByText(info.hotelBranch).click()
     await page1.locator(".text-lg").first().click()
-    await page1.locator("abbr[aria-label*='December 20, 2025']").click()
-    await page1.locator("abbr[aria-label*='December 21, 2025']").click()
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").click()
     await page1.locator("button.w-full").nth(2).click()
     await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
     await page1.getByRole("button", {name: "Confirm"}).click()
@@ -612,7 +654,7 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 
     //ASSERTION: Available Plans displays once the search results are loaded, so we do an assertion for it
     await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
-    await page1.locator("#search-result-group-11933968").getByRole("button", {name: "Book now"}).nth(1).click()
+    await page1.getByRole("button", {name: "Book now"}).nth(3).click()
 
     //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
     //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
@@ -623,13 +665,12 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     //You can add more assertions here to check if the value in each field is correct or not later on for the user details. 
     //For now we want to keep it straightforward so we'll just skip to payment processing
 
-    await page1.locator('[name="arrivalTime"]').click()//Open the "Select Arrival Time" dropdown
-    await page1.getByRole("option", {name: "11:00"}).click()//Select a time slot in the dropdown
-
-    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation")
+    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
+    await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
+    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation")//Fill in Remarks section
 
     await page1.locator("#credit_card").click() //Click the "Credit Card" radio button
-    await page1.locator('[name="cardBrand"]').click()//Open the Card Type dropdown
+    await page1.locator('[name="cardBrand"]').last().click()//Open the Card Type dropdown <----- Andra implemented the new CC improvement, so need to change it
     await page1.getByRole("option", {name: "JCB"}).click()//Click the specified card type
     await page1.locator('[name="cardName"]').fill("SATIVEL")//Fill in Cardholder Name
     await page1.locator('[name="cardNumber"]').fill("3528000000005006")//Fill in Card
@@ -638,7 +679,7 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
     await page1.locator('[name="couponCode"]').fill("D1000")//Enter Promo Code
     await page1.getByRole("button", {name: "Check"}).first().click()//Click CHECK button for Promo Code
-    await page1.locator('[name="spendingPoint"]').fill("2000")//Enter Points for discount
+    await page1.locator('[name="spendingPoint"]').fill("100")//Enter Points for discount
     await page1.getByRole("button", {name: "Check"}).last().click()//Click CHECK button for Points
 
     await expect(page1.locator("div.text-sm.text-right").nth(0)).not.toHaveText("0pt")//ASSERTION: Check if the Points discount is applied
@@ -646,13 +687,12 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 
     await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
 
+    //Make Playwright locate the button on the Payment Gateway modal and click it
+    await page.locator('iframe').contentFrame().getByRole('button', { name: '決済に進む' }).click();
 
-    //TODO: Figure out how to make Playwright locate the button on the Payment Gateway modal and click it
-    //await page1.locator("button[type='submit']").click()
-    //await page1.locator("form[name='from']").click()//Click "Confirm" button in Payment Gateway to finalize payment
-
-    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")//ASSERTION: Check if the user has reached the Successfully Booked screen
-
+    //ASSERTION: Check if the user has reached the Successfully Booked screen
+    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")
     await page1.pause()
 
 });
+
