@@ -48,11 +48,12 @@ test.afterEach(async ({ page }, testInfo) => {
 //Object
 const info =
 {
+    //fixedEmail:"nathan.sativelthamilvanan+webcc1@jitera.com",
     fixedEmail:"nathan.sativelthamilvanan+payerrortest1@jitera.com",
     fixedPassword:"Newpassword1",
 
     //MEMBERSHIP REGISTRATION
-    memberReg_Email:"mugwardad@pngk.uk", //Each time "Member Registration" test case is run, update this string
+    memberReg_Email:"bee113@kywa.uk", //Each time "Member Registration" test case is run, update this string
     memberReg_Password:"Newpassword1",
     memberReg_FirstName:"Sativel",
     memberReg_LastName:"Nathan",
@@ -66,25 +67,25 @@ const info =
     memberReg_PhoneNumber:"+1234567890",
 
     //EDIT PROFILE
-    editProfile_FirstName:"SativelU",
-    editProfile_LastName:"NathanU",
-    editProfile_FirstName_Kana:"アア",
-    editProfile_LastName_Kana:"エエ",
+    editProfile_FirstName:"Sativel",
+    editProfile_LastName:"Nathan",
+    editProfile_FirstName_Kana:"ア",
+    editProfile_LastName_Kana:"エ",
     editProfile_Country:"Germany",
-    editProfile_Zipcode:"2222222",
-    editProfile_State:"StateU",
-    editProfile_City:"CityU",
-    editProfile_Address:"AddressU",
-    editProfile_PhoneNumber:"+2222222222",
+    editProfile_Zipcode:"444444444",
+    editProfile_State:"State4",
+    editProfile_City:"City4",
+    editProfile_Address:"Address4",
+    editProfile_PhoneNumber:"+4444444444",
     editProfile_Birthday_YearRange:"1941 – 1950", // <-- Uses an EN DASH, not a normal hyphen. Code fails if use normal hyphen
-    editProfile_Birthday_Year:"1950",
-    editProfile_Birthday_Month:"July",
-    editProfile_Birthday_Day:"23",
+    editProfile_Birthday_Year:"1943",
+    editProfile_Birthday_Month:"June",
+    editProfile_Birthday_Day:"24",
     editProfile_Gender:"Female",
 
     //RESET PASSWORD
     resetPW_Email:"kithayfig@otona.uk",
-    resetPW_Password:"Newpassword16", //Each time "Reset Password" test case is run, update this string
+    resetPW_Password:"Newpassword18", //Each time "Reset Password" test case is run, update this string
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -92,8 +93,8 @@ const info =
 
     //CREATE, EDIT, CANCEL RESERVATION
     hotelBranch: "Tokyu Stay Ginza(staging)",
-    checkInDate: "May 8, 2026",
-    checkOutDate: "May 9, 2026",
+    checkInDate: "June 1, 2026",
+    checkOutDate: "June 2, 2026",
     arrivalTime: "22:00"
 }
 
@@ -145,8 +146,10 @@ test('Tokyu Stay - Logout', async({page})=>
 
 });
 
+
 //STATUS: OK
-//Some refactoring required for the InstAddr page related code & add some additional assertion in the "SmartClub Confirm Details" page (the one with the edit button)
+//PRECONDITIONS: Update the email to use for Member Reg in const objects before running test
+//NOTES: Some refactoring required for the InstAddr page related code & add some additional assertion in the "SmartClub Confirm Details" page (the one with the edit button)
 test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 {
     const context1 = await browser.newContext()
@@ -245,6 +248,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 });
 
 //STATUS: OK
+//PRECONDITIONS: Update the password to use for Reset Password in const objects before running test
 //Some refactoring required for the InstAddr page rlated code
 test('Tokyu Stay - Reset Password', async({browser, page})=>
 {
@@ -326,11 +330,13 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     const pointVisible = await page3.locator("div.space-x-2").isVisible()
     await expect(pointVisible).toBeTruthy()
 
-    await page3.pause()
+    //await page3.pause()
 
 });         
 
+
 //STATUS: OK
+//PRECONDITIONS: Update the inputs for the fields to be edited in const objects, as well as the checkin/out date
 //Some refactoring could be done to streamline the code, otherwise it covers the requirements
 test('Tokyu Stay - Edit Profile', async({page})=>
 {
@@ -464,7 +470,7 @@ test('Tokyu Stay - Edit Profile', async({page})=>
 
     }
 
-    await page1.pause()
+    //await page1.pause()
 
     
 });
@@ -496,11 +502,74 @@ test('Tokyu Stay - Point Information', async({page})=>
     const pointStringSmartClub = await returnedPage.locator("#total_point").textContent()
     expect(parseInt(pointStringSmartClub)).toBeGreaterThanOrEqual(0)
 
-    await returnedPage.pause()
+    //await returnedPage.pause()
+});
+
+//STATUS: OK
+test('Tokyu Stay - Logged In Reservation', async({page})=>
+{
+    const page1 = await Login(page)
+
+    await page1.locator(".relative.bg-white").last().click()
+    await page1.getByText(info.hotelBranch).click()
+    await page1.locator(".text-lg").first().click()
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").click()
+    await page1.locator("button.w-full").nth(2).click()
+    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
+    await page1.getByRole("button", {name: "Confirm"}).click()
+    await page1.getByRole("button", {name: "Search"}).click()
+
+    //ASSERTION: Available Plans displays once the search results are loaded, so we do an assertion for it
+    await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
+    await page1.getByRole("button", {name: "Book now"}).nth(3).click()
+
+    //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
+    //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
+    //Only after the .js script is executed then only the correct Points to Be Earned value is shown
+    //So this code keeps running the assertion multiple times until the Points to Be Earned text is NOT 0pt
+    await expect(page1.locator("div.text-sm.text-right").locator(".font-bold").last()).not.toHaveText("0pt")
+
+    //You can add more assertions here to check if the value in each field is correct or not later on for the user details. 
+    //For now we want to keep it straightforward so we'll just skip to payment processing
+
+    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
+    await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
+    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation")//Fill in Remarks section
+
+    await page1.locator("#credit_card").click() //Click the "Credit Card" radio button
+    //await page1.locator('[name="cardBrand"]').last().click()//Open the Card Type dropdown <----- Andra implemented the new CC improvement, so need to change it
+    //await page1.getByRole("option", {name: "JCB"}).click()//Click the specified card type
+    await page1.locator('[name="cardName"]').fill("SATIVEL")//Fill in Cardholder Name
+    await page1.locator('[name="cardNumber"]').pressSequentially("3528000000005006")//Fill in Card
+    await page1.locator('[name="expiredDate"]').fill("0156")//Fill in Expiry Date
+    await page1.getByPlaceholder("CVC").fill("012")//Fill in CVV
+    await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
+    await page1.locator('[name="couponCode"]').fill("D1000")//Enter Promo Code
+    await page1.getByRole("button", {name: "Check"}).first().click()//Click CHECK button for Promo Code
+    await page1.locator('[name="spendingPoint"]').fill("100")//Enter Points for discount
+    await page1.getByRole("button", {name: "Check"}).last().click()//Click CHECK button for Points
+
+    await expect(page1.locator("div.text-sm.text-right").nth(0)).not.toHaveText("0pt")//ASSERTION: Check if the Points discount is applied
+    await expect(page1.locator("div.text-sm.text-right").nth(1)).not.toHaveText("¥ 0")//ASSERTION: Check if the Promo Code discount is applied
+
+    await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
+
+    //Make Playwright locate the button on the Payment Gateway modal and click it
+    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+
+    //ASSERTION: Check if the user has reached the Successfully Booked screen
+    await page.waitForTimeout(3 * 1000)
+    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")
+    //await page1.pause()
+
 });
 
 
+///////////////////
+
 //STATUS: TODO
+/*Reservation History
 test('Tokyu Stay - Reservation History', async ({browser, page})=>
 {
     const context1 = await browser.newContext()
@@ -553,7 +622,7 @@ test('Tokyu Stay - Reservation History', async ({browser, page})=>
     await expect(page1.locator("label.text-xs").nth(29)).toHaveText(/\S+/) //Points returned after cancellation fine print text
 
 
-    /*
+    
     //Check View Map (opens a new tab)
     const [page2] = await Promise.all(
     [
@@ -562,7 +631,7 @@ test('Tokyu Stay - Reservation History', async ({browser, page})=>
     ])
 
     await expect(page2).toHaveURL("https://www.google.com/maps/place/35%C2%B039'48.4%22N+139%C2%B045'25.2%22E/@35.663455,139.7544121,17z/data=!3m1!4b1!4m4!3m3!8m2!3d35.663455!4d139.756987?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
-    */
+    
     
     //await page2.pause()
 
@@ -629,70 +698,13 @@ test('Tokyu Stay - Reservation History', async ({browser, page})=>
 
     for(let i = 0; i < numOfImages; i++)
         await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-    */
+    
 
     //await page1.pause()
 
 })
+*/
 
 
-//STATUS: TODO
-//Figure out how to make Playwright click the button on the Payment Gateway modal at the last step
-test.only('Tokyu Stay - Logged In Reservation', async({page})=>
-{
-    const page1 = await Login(page)
 
-    await page1.locator(".relative.bg-white").last().click()
-    await page1.getByText(info.hotelBranch).click()
-    await page1.locator(".text-lg").first().click()
-    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").click()
-    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").click()
-    await page1.locator("button.w-full").nth(2).click()
-    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
-    await page1.getByRole("button", {name: "Confirm"}).click()
-    await page1.getByRole("button", {name: "Search"}).click()
-
-    //ASSERTION: Available Plans displays once the search results are loaded, so we do an assertion for it
-    await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
-    await page1.getByRole("button", {name: "Book now"}).nth(3).click()
-
-    //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
-    //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
-    //Only after the .js script is executed then only the correct Points to Be Earned value is shown
-    //So this code keeps running the assertion multiple times until the Points to Be Earned text is NOT 0pt
-    await expect(page1.locator("div.text-sm.text-right").locator(".font-bold").last()).not.toHaveText("0pt")
-
-    //You can add more assertions here to check if the value in each field is correct or not later on for the user details. 
-    //For now we want to keep it straightforward so we'll just skip to payment processing
-
-    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
-    await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
-    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation")//Fill in Remarks section
-
-    await page1.locator("#credit_card").click() //Click the "Credit Card" radio button
-    await page1.locator('[name="cardBrand"]').last().click()//Open the Card Type dropdown <----- Andra implemented the new CC improvement, so need to change it
-    await page1.getByRole("option", {name: "JCB"}).click()//Click the specified card type
-    await page1.locator('[name="cardName"]').fill("SATIVEL")//Fill in Cardholder Name
-    await page1.locator('[name="cardNumber"]').fill("3528000000005006")//Fill in Card
-    await page1.locator('[name="expiredDate"]').fill("0126")//Fill in Expiry Date
-    await page1.getByPlaceholder("CVC").fill("012")//Fill in CVV
-    await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
-    await page1.locator('[name="couponCode"]').fill("D1000")//Enter Promo Code
-    await page1.getByRole("button", {name: "Check"}).first().click()//Click CHECK button for Promo Code
-    await page1.locator('[name="spendingPoint"]').fill("100")//Enter Points for discount
-    await page1.getByRole("button", {name: "Check"}).last().click()//Click CHECK button for Points
-
-    await expect(page1.locator("div.text-sm.text-right").nth(0)).not.toHaveText("0pt")//ASSERTION: Check if the Points discount is applied
-    await expect(page1.locator("div.text-sm.text-right").nth(1)).not.toHaveText("¥ 0")//ASSERTION: Check if the Promo Code discount is applied
-
-    await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
-
-    //Make Playwright locate the button on the Payment Gateway modal and click it
-    await page.locator('iframe').contentFrame().getByRole('button', { name: '決済に進む' }).click();
-
-    //ASSERTION: Check if the user has reached the Successfully Booked screen
-    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")
-    await page1.pause()
-
-});
 

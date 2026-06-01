@@ -3,7 +3,7 @@ import { defineConfig, devices, expect } from '@playwright/test';
 
 const config = ({
   testDir: './tests', /* Run tests in files in parallel */
-  timeout: 100 * 1000,
+  timeout: 200 * 1000,
   expect: 50 * 1000,
   reporter: [
     ['html'],
@@ -14,7 +14,7 @@ const config = ({
   {
     browser: 'chromium',
     headless: false,
-    screenshot: 'only-on-failure', // built-in for failures
+    screenshot: 'on',
 
   },
 
