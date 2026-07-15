@@ -48,12 +48,12 @@ test.afterEach(async ({ page }, testInfo) => {
 //Object
 const info =
 {
-    //fixedEmail:"nathan.sativelthamilvanan+webcc1@jitera.com",
+    //fixedEmail:"nathan.sativelthamilvanan+webcc1@jitera.com", //For Reservation History later
     fixedEmail:"nathan.sativelthamilvanan+payerrortest1@jitera.com",
     fixedPassword:"Newpassword1",
 
     //MEMBERSHIP REGISTRATION
-    memberReg_Email:"bee113@kywa.uk", //Each time "Member Registration" test case is run, update this string
+    memberReg_Email:"tokyusativeltest2@haren.uk", //Each time "Member Registration" test case is run, update this string (must be a fresh, never-registered address; the "@kywa.uk" domain used previously has been retired from InstAddr)
     memberReg_Password:"Newpassword1",
     memberReg_FirstName:"Sativel",
     memberReg_LastName:"Nathan",
@@ -85,7 +85,7 @@ const info =
 
     //RESET PASSWORD
     resetPW_Email:"kithayfig@otona.uk",
-    resetPW_Password:"Newpassword18", //Each time "Reset Password" test case is run, update this string
+    resetPW_Password:"Newpassword27", //Each time "Reset Password" test case is run, update this string
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -93,8 +93,8 @@ const info =
 
     //CREATE, EDIT, CANCEL RESERVATION
     hotelBranch: "Tokyu Stay Ginza(staging)",
-    checkInDate: "June 1, 2026",
-    checkOutDate: "June 2, 2026",
+    checkInDate: "July 29, 2026", //Must be a future date relative to when the test is run, or the calendar day will be disabled
+    checkOutDate: "July 30, 2026", //Must be a future date relative to when the test is run, or the calendar day will be disabled
     arrivalTime: "22:00"
 }
 
@@ -160,10 +160,10 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 
     await page1.locator("a[href*='mypage/register']").click()
     
-    //Ensure SmartClub page language is default Japanese
+    //Ensure SmartClub page language is English (site no longer defaults to Japanese, so select explicitly instead of assuming position)
     await page1.waitForTimeout(3*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
     await page1.locator("button.p-header__translate__button").click()
-    await page1.locator(".p-header__translate__lang").first().click()
+    await page1.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
 
     await page1.locator("input[name='email']").fill(info.memberReg_Email)
     await page1.locator("input[name='password']").fill(info.memberReg_Password)
@@ -189,7 +189,8 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await page1.locator("button.c-button").click()
 
     //ASSERTION: Check if the user is at the Confirmation Email sent page
-    await expect(page1.locator(".eng-text-register__mail")).toHaveText("Confirmation email has been sent")
+    //NOTE: the "sent"/last word of this text renders as a sibling text node outside .eng-text-register__mail, so assert on the parent instead of an exact match on the span itself
+    await expect(page1.locator(".eng-text-register__mail").locator("xpath=..")).toContainText("Confirmation email has been sent")
 
     //PAGE 2
     const instAddrContext = await browser.newContext()
@@ -211,7 +212,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     const [page3] = await Promise.all
     ([
         instAddrContext.waitForEvent("page"),//The "heads-up" to look out for the new window
-        frame.locator("a[href*='gateway.exwa']").first().click()//The action that opens the new window
+        frame.locator("a[href*='exwa.org']").first().click()//The action that opens the new window (mail gateway domain now uses "gatewayN.exwa.org", not "gateway.exwa.org")
     ])
 
     //PAGE 3
@@ -237,7 +238,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await page3.locator("button.c-button").click()
     await page3.locator("button.c-button__1").click()//Save button
 
-    await expect(page3.locator("span.eng-text-register__mail")).toContainText("Registration completed.")
+    await expect(page3.locator("span.eng-text-register__mail").locator("xpath=..")).toContainText("Registration completed.")
 
     await page3.locator("a.c-button").click()//Click "Service button"
 
@@ -264,16 +265,16 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await expect(page1).toHaveURL("https://test-smartclub.metroengines.jp/mypage/password/reset")
     await page1.waitForTimeout(2*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
 
-    //Ensure SmartClub page1 language is default Japanese
+    //Ensure SmartClub page1 language is English (site no longer defaults to Japanese, so select explicitly instead of assuming position)
     const btn = page1.locator("button.p-header__translate__button:visible")
     await expect(btn).toBeEnabled();     // ensures hydration done
     await expect(btn).toBeInViewport();  // ensures no overlays
     await btn.click();
-    await page1.locator(".p-header__translate__lang").first().click()
-    
+    await page1.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
+
 
     await page1.getByPlaceholder("例）user@smartclub.tokyu-rs.co.jp").fill(info.resetPW_Email)
-    await page1.getByRole("button", {name: "パスワード再発行 / Send email"}).click()
+    await page1.getByRole("button", {name: /Send email/}).click()
     await expect(page1).toHaveURL("https://test-smartclub.metroengines.jp/mypage/password/send/mail")
     
     //Open InstAddr to check mail
@@ -296,23 +297,23 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     const [page2] = await Promise.all
     ([
         instAddrContext.waitForEvent("page"),//The "heads-up" to look out for the new window
-        frame.locator("a[href*='gateway.exwa']").first().click()//The action that opens the new window
+        frame.locator("a[href*='exwa.org']").first().click()//The action that opens the new window (mail gateway domain now uses "gatewayN.exwa.org", not "gateway.exwa.org")
     ])
 
     //PAGE 2
-    //Ensure SmartClub page language is default Japanese
+    //Ensure SmartClub page language is English (site no longer defaults to Japanese, so select explicitly instead of assuming position)
     await page1.waitForTimeout(4*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
     const btn2 = page2.locator("button.p-header__translate__button");
     await expect(btn2).toBeEnabled();     // ensures hydration done
     await expect(btn2).toBeInViewport();  // ensures no overlays
     await btn2.click();
-    await page2.locator(".p-header__translate__lang").first().click()
+    await page2.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
 
     await page2.getByPlaceholder("新しいパスワード / New password").fill(info.resetPW_Password)
     await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(info.resetPW_Password)
-    await page2.getByRole("button", {name: "パスワード再発行 / Reset password"}).click()
+    await page2.getByRole("button", {name: /Reset password/}).click()
     await page1.waitForTimeout(4*1000)
-    await expect(page2.locator("p.title")).toHaveText("パスワードを変更しました。")
+    await expect(page2.locator("p.title")).toContainText("Your password has been changed.")
 
     //PAGE 3
     //Go back to STAY reservation site and login with the new password
@@ -417,13 +418,15 @@ test('Tokyu Stay - Edit Profile', async({page})=>
     await page1.locator(".relative.bg-white").last().click()
     await page1.getByText(info.hotelBranch).click()
     await page1.locator(".text-lg").first().click()
-    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").click()
-    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").click()
+    //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
     await page1.locator("button.w-full").nth(2).click()
     await page1.locator("svg[stroke*='A7A7A7']").nth(1).click()
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
-    await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
+    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
+    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
     await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
 
     await page1.waitForTimeout(4*1000)
@@ -506,6 +509,7 @@ test('Tokyu Stay - Point Information', async({page})=>
 });
 
 //STATUS: OK
+//PRECONDITIONS: Update the Check-In/Checkout dates before running this script
 test('Tokyu Stay - Logged In Reservation', async({page})=>
 {
     const page1 = await Login(page)
@@ -513,16 +517,18 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     await page1.locator(".relative.bg-white").last().click()
     await page1.getByText(info.hotelBranch).click()
     await page1.locator(".text-lg").first().click()
-    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").click()
-    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").click()
+    //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
     await page1.locator("button.w-full").nth(2).click()
     await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
 
-    //ASSERTION: Available Plans displays once the search results are loaded, so we do an assertion for it
-    await expect(page1.getByText('Available Plans', { exact: true }).first()).toBeVisible() 
-    await page1.getByRole("button", {name: "Book now"}).nth(3).click()
+    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
+    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
+    //NOTE: an unscoped global index into "Book now" buttons is fragile (the resale-plan section adds extra buttons, and sold-out rooms render disabled ones), so scope to a specific, stable plan group like the Edit Profile test does
+    await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
 
     //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
     //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
