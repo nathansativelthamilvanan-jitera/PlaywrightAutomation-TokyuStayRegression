@@ -53,7 +53,7 @@ const info =
     fixedPassword:"Newpassword1",
 
     //MEMBERSHIP REGISTRATION
-    memberReg_Email:"tokyusativeltest2@haren.uk", //Each time "Member Registration" test case is run, update this string (must be a fresh, never-registered address; the "@kywa.uk" domain used previously has been retired from InstAddr)
+    memberReg_Email:"budsumlet@kywa.uk", //Each time "Member Registration" test case is run, update this string (must be a fresh, never-registered address)
     memberReg_Password:"Newpassword1",
     memberReg_FirstName:"Sativel",
     memberReg_LastName:"Nathan",
@@ -85,7 +85,7 @@ const info =
 
     //RESET PASSWORD
     resetPW_Email:"kithayfig@otona.uk",
-    resetPW_Password:"Newpassword27", //Each time "Reset Password" test case is run, update this string
+    resetPW_Password:"Newpassword30", //Each time "Reset Password" test case is run, update this string
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -574,143 +574,128 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 
 ///////////////////
 
-//STATUS: TODO
-/*Reservation History
-test('Tokyu Stay - Reservation History', async ({browser, page})=>
+//STATUS: OK
+//PRECONDITIONS: Update the Check-In/Checkout dates before running this script
+test('Tokyu Stay - Reservation History', async ({page})=>
 {
-    const context1 = await browser.newContext()
     const page1 = await Login(page)
+
+    //Create a logged-in reservation (mirrors the "Logged In Reservation" test)
+    await page1.locator(".relative.bg-white").last().click()
+    await page1.getByText(info.hotelBranch).click()
+    await page1.locator(".text-lg").first().click()
+    //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
+    await page1.locator("button.w-full").nth(2).click()
+    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
+    await page1.getByRole("button", {name: "Confirm"}).click()
+    await page1.getByRole("button", {name: "Search"}).click()
+
+    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
+    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
+    await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
+
+    await page1.waitForTimeout(4*1000)
+    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
+    await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
+    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation")//Fill in Remarks section
+
+    await page1.locator("#credit_card").click() //Click the "Credit Card" radio button
+    await page1.locator('[name="cardName"]').fill("SATIVEL")//Fill in Cardholder Name
+    await page1.locator('[name="cardNumber"]').pressSequentially("3528000000005006")//Fill in Card (must use pressSequentially, .fill() triggers "Invalid Card Number" on this masked input)
+    await page1.locator('[name="expiredDate"]').fill("0156")//Fill in Expiry Date
+    await page1.getByPlaceholder("CVC").fill("012")//Fill in CVV
+    await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
+    await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
+
+    //Make Playwright locate the button on the Payment Gateway modal and click it
+    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+
+    //ASSERTION: Check if the user has reached the Successfully Booked screen
+    await page.waitForTimeout(3 * 1000)
+    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")
+
+    //Grab the reservation number from the success URL so we can find this exact booking among the account's other reservations
+    const reservationNo = new URL(page1.url()).searchParams.get("reservationNo")
+    expect(reservationNo).toBeTruthy()
 
     //GO TO BOOKINGS TAB
     await page1.locator("a[href*='my-page/profile']").click()
     await page1.getByRole("listitem").locator("a[href*='reservations']").click()
-    await expect(await page1.getByText("Bookings").first()).toBeVisible()
+    await expect(page1.getByRole("heading", {name: "Bookings"})).toBeVisible()
+    await page1.waitForLoadState("load")
+    await page1.waitForTimeout(2*1000) //Wait for hydration so the accordion buttons' click handlers are attached before we click them
+
+    //The account accumulates bookings across test runs, so the Upcoming list paginates (10 per page) and our new
+    //booking may land on a later page. The reservation number only renders once a card is expanded, so on each page
+    //expand every card (desktop layout only; the mobile layout duplicate stays hidden) and check for a match before
+    //moving to the next page.
+    let ourCard = page1.locator("div.w-full.bg-white.border-primary-light.border:visible").filter({hasText: reservationNo})
+    for(let pageNum = 0; pageNum < 20 && await ourCard.count() === 0; pageNum++)
+    {
+        const cards = page1.locator("div.w-full.bg-white.border-primary-light.border:visible")
+        const cardCount = await cards.count()
+        for(let i = 0; i < cardCount; i++)
+            await cards.nth(i).locator("button").first().click()
+
+        ourCard = page1.locator("div.w-full.bg-white.border-primary-light.border:visible").filter({hasText: reservationNo})
+        if(await ourCard.count() > 0)
+            break
+
+        const nextPageButton = page1.getByRole("button", {name: "Next"})
+        if(!(await nextPageButton.isVisible()) || !(await nextPageButton.isEnabled()))
+            break
+        await nextPageButton.click()
+        await page1.waitForTimeout(1*1000)
+    }
+
+    //ASSERTION: our newly created reservation was found (fails clearly instead of hanging if it wasn't on any page)
+    await expect(ourCard).toHaveCount(1)
+    await ourCard.getByRole("button", {name: "Details & QR"}).click()
     await page1.waitForLoadState("load")
 
-    //COMPLETE TAB
-    await page1.locator("a[href*='reservations?status=done']").first().click()
-    await page1.locator("div div button.items-start").first().click()
-    await page1.getByRole("button", {name: "Details & QR"}).click()
-    await page1.waitForLoadState("load")
-    await page1.waitForSelector("span.uppercase")
+    //NOTE: the page renders a hidden duplicate of this layout for the other breakpoint (desktop/mobile), so every locator below is scoped with :visible to avoid strict-mode violations
 
-    //COMPLETED - Check images
-    let numOfImages = await page1.locator("div.flex.cursor-default.space-x-4").first().locator("> div").count();
-    console.log("numOfImages COMPLETED: " + numOfImages)
-
-    for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-pointer").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-
-    for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-
-
-    //COMPLETED - Check QR Code
+    //ASSERTION: User able to click the QR code and close it
     await page1.locator("a[href*='qrcode']:visible").click()
-    await expect(page1.locator("div canvas:visible")).toBeVisible()
-    await page1.locator("a[href*='#']").click()
+    await expect(page1.locator("canvas:visible")).toBeVisible()
+    await page1.locator("a:visible", {hasText: "Close"}).click()
+    await expect(page1.getByRole("heading", {name: "Reservation Details"}).first()).toBeVisible()
 
-
-    //COMPLETED - Verify Booking Details
-    await expect(page1.locator("div.mt-1").nth(4)).toHaveText(/\S+/) //Check if First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(5)).toHaveText(/\S+/) //Check if Last Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(6)).toHaveText(/\S+/) //Check if Guest First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(7)).toHaveText(/\S+/) //Check if Guest Last Name has any character displayed
-    await expect(page1.locator("div.text-sm").nth(23)).toHaveText(/\S+/) //Check in Date
-    await expect(page1.locator("div.text-sm").nth(24)).toHaveText(/\S+/) //Check out Date
-    await expect(page1.locator("div.text-sm").nth(25)).toHaveText(/\S+/) //Plan Name
-    await expect(page1.locator("div.text-sm").nth(27)).toHaveText(/\S+/) //Estimated Arrival Time
-    await expect(page1.locator("div.text-sm").nth(29)).toHaveText(/\S+/) //Subtotal
-    await expect(page1.locator("div.text-sm").nth(30)).toHaveText(/\S+/) //Points Used
-    await expect(page1.locator("div.text-sm").nth(31)).toHaveText(/\S+/) //Membership Discount
-    await expect(page1.locator("div.text-sm").nth(32)).toHaveText(/\S+/) //Promotion Discount
-    await expect(page1.locator("div.text-sm").nth(33)).toHaveText(/\S+/) //Total Amount
-    await expect(page1.locator("label.text-xs").nth(29)).toHaveText(/\S+/) //Points returned after cancellation fine print text
-
-
-    
-    //Check View Map (opens a new tab)
-    const [page2] = await Promise.all(
+    //ASSERTION: User able to view the Map (opens in a new tab)
+    const [mapPage] = await Promise.all(
     [
-        context1.waitForEvent("page"),
-        page1.locator("div.text-sm.ml-1:visible").click()
+        page1.context().waitForEvent("page"),
+        page1.locator("a:visible", {hasText: "View map"}).click()
     ])
+    await mapPage.waitForLoadState()
+    expect(mapPage.url()).toContain("google.com/maps")
+    await mapPage.close()
 
-    await expect(page2).toHaveURL("https://www.google.com/maps/place/35%C2%B039'48.4%22N+139%C2%B045'25.2%22E/@35.663455,139.7544121,17z/data=!3m1!4b1!4m4!3m3!8m2!3d35.663455!4d139.756987?entry=ttu&g_ep=EgoyMDI1MTIwOS4wIKXMDSoKLDEwMDc5MjA3MUgBUAM%3D")
-    
-    
-    //await page2.pause()
-
-
-    //CANCELLED TAB
-    await page1.locator("a[href='/en/my-page/reservations']").first().click()
-    await page1.locator("a[href='/en/my-page/reservations?status=cancelled']").first().click()
-    await page1.locator("div div button.items-start").first().click()
-    await page1.getByRole("button", {name: "Details & QR"}).click()
-    await page1.waitForLoadState("load")
-    await page1.waitForSelector("span.uppercase")
-
-
-    //CANCELLED - Verify Booking Details
-    await expect(page1.locator("div.mt-1").nth(4)).toHaveText(/\S+/) //Check if First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(5)).toHaveText(/\S+/) //Check if Last Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(6)).toHaveText(/\S+/) //Check if Guest First Name has any character displayed
-    await expect(page1.locator("div.mt-1").nth(7)).toHaveText(/\S+/) //Check if Guest Last Name has any character displayed
-    await expect(page1.locator("div.text-sm").nth(23)).toHaveText(/\S+/) //Check in Date
-    await expect(page1.locator("div.text-sm").nth(24)).toHaveText(/\S+/) //Check out Date
-    await expect(page1.locator("div.text-sm").nth(25)).toHaveText(/\S+/) //Plan Name
-    await expect(page1.locator("div.text-sm").nth(27)).toHaveText(/\S+/) //Estimated Arrival Time
-    await expect(page1.locator("div.text-sm").nth(29)).toHaveText(/\S+/) //Subtotal
-    await expect(page1.locator("div.text-sm").nth(30)).toHaveText(/\S+/) //Points Used
-    await expect(page1.locator("div.text-sm").nth(31)).toHaveText(/\S+/) //Membership Discount
-    await expect(page1.locator("div.text-sm").nth(32)).toHaveText(/\S+/) //Promotion Discount
-    await expect(page1.locator("div.text-sm").nth(33)).toHaveText(/\S+/) //Total Amount
-
-    //CANCELLED - Check images
-    numOfImages = await page1.locator("div.flex.cursor-default.space-x-4").first().locator("> div").count();
-    console.log("numOfImages CANCELLED: " + numOfImages)
+    //ASSERTION: User is able to cycle through all the images in the carousel
+    const thumbnailRow = page1.locator("div.flex.cursor-default.space-x-4:visible").first()
+    const thumbnails = thumbnailRow.locator("> div")
+    await expect(thumbnails.first()).toBeVisible() //Wait for the carousel's images to finish loading before counting them
+    const numOfImages = await thumbnails.count()
+    expect(numOfImages).toBeGreaterThan(0)
 
     for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-pointer").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
+        await thumbnails.nth(i).locator(".cursor-pointer").click()
 
-    for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-
-    //CANCELLED - Check QR Code
-    await page1.locator("a[href*='qrcode']:visible").click()
-    await expect(page1.locator("div canvas:visible")).toBeVisible()
-    await page1.locator("a[href*='#']").click()
-
-
-
+    //ASSERTION: Reservation information is displayed clearly
+    await expect(page1.getByRole("heading", {name: "Reservation Name"}).first()).toBeVisible()
+    const nameValues = page1.locator("div.mt-1.text-sm.break-all:visible")
+    await expect(nameValues.nth(0)).toHaveText(/\S+/) //Reservation First Name
+    await expect(nameValues.nth(1)).toHaveText(/\S+/) //Reservation Last Name
+    await expect(nameValues.nth(2)).toHaveText(/\S+/) //Guest First Name
+    await expect(nameValues.nth(3)).toHaveText(/\S+/) //Guest Last Name
+    await expect(page1.locator("li:visible").filter({hasText: "Check-in"})).toContainText(/\w+ \d{1,2}, \d{4}/) //Check-in/Check-out dates
+    await expect(page1.locator("li:visible").filter({hasText: "Plan name"}).locator("div")).toHaveText(/\S+/)
+    await expect(page1.locator("li:visible").filter({hasText: "Estimated arrival time"}).locator("div")).toHaveText(/\S+/)
+    await expect(page1.locator("li:visible").filter({hasText: "Total"}).last()).toContainText("¥") //Final total row (".last()" avoids matching the "Subtotal" row)
 
     //await page1.pause()
 
-    //UPCOMING TAB
-    /*
-    await page1.locator("a[href='/en/my-page/reservations']").first().click()
-    await page1.locator("a[href='/en/my-page/reservations']").first().click()
-    await page1.locator("div div button.items-start").first().click()
-    await page1.getByRole("button", {name: "Details & QR"}).click()
-    await page1.waitForLoadState("load")
-    await page1.waitForSelector("span.uppercase")
-
-    //Check images
-    numOfImages = await page1.locator("div.flex.cursor-default.space-x-4").first().locator("> div").count();
-    console.log("numOfImages: " + numOfImages)
-
-    for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-pointer").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-
-    for(let i = 0; i < numOfImages; i++)
-        await page1.locator("div.cursor-default").locator("svg[xmlns*='2000/svg']").first().click({clickCount: numOfImages})
-    
-
-    //await page1.pause()
-
-})
-*/
-
-
-
+});
 
