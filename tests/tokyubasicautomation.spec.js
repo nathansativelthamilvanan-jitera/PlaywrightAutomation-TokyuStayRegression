@@ -53,7 +53,8 @@ const info =
     fixedPassword:"Newpassword1",
 
     //MEMBERSHIP REGISTRATION
-    memberReg_Email:"budsumlet@kywa.uk", //Each time "Member Registration" test case is run, update this string (must be a fresh, never-registered address)
+    //NOTE: memberReg_Email is no longer a fixed value here - CreateInstAddrTempEmail() generates a fresh, never-used
+    //address via InstAddr automatically at the start of the "Pure Membership Registration" test.
     memberReg_Password:"Newpassword1",
     memberReg_FirstName:"Sativel",
     memberReg_LastName:"Nathan",
@@ -85,7 +86,8 @@ const info =
 
     //RESET PASSWORD
     resetPW_Email:"kithayfig@otona.uk",
-    resetPW_Password:"Newpassword30", //Each time "Reset Password" test case is run, update this string
+    //NOTE: resetPW_Password is no longer a fixed value here - it's generated fresh at the start of the "Reset Password"
+    //test (see GenerateFreshPassword()), so it never collides with whatever the account's password already is.
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -93,9 +95,25 @@ const info =
 
     //CREATE, EDIT, CANCEL RESERVATION
     hotelBranch: "Tokyu Stay Ginza(staging)",
-    checkInDate: "July 29, 2026", //Must be a future date relative to when the test is run, or the calendar day will be disabled
-    checkOutDate: "July 30, 2026", //Must be a future date relative to when the test is run, or the calendar day will be disabled
     arrivalTime: "22:00"
+}
+
+//Check-In is always today and Check-Out is always the next day, so these never need manual updating between runs
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"]
+function FormatCalendarDate(date)
+{
+    return `${MONTH_NAMES[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+}
+const today = new Date()
+const tomorrow = new Date(today)
+tomorrow.setDate(today.getDate() + 1)
+info.checkInDate = FormatCalendarDate(today)
+info.checkOutDate = FormatCalendarDate(tomorrow)
+
+//Generates a password that's guaranteed to differ from whatever the account's password currently is
+function GenerateFreshPassword()
+{
+    return "Newpassword" + Date.now().toString().slice(-6)
 }
 
 
@@ -115,6 +133,96 @@ async function Login(arg_page)
     expect(pointVisible).toBeTruthy()
 
     return arg_page
+}
+
+//InstAddr guards its login/address actions with an invisible Google reCAPTCHA that normally passes silently, but
+//repeated automated runs from the same IP/browser can push it to fall back to showing the classic "I'm not a robot"
+//checkbox challenge. When that happens the checkbox just needs a click (no image/puzzle solving involved), so poll
+//briefly for the reCAPTCHA iframe and click it if it shows up; if it never appears this is a harmless no-op.
+async function DismissRecaptchaCheckboxIfPresent(instAddrPage, timeoutMs = 5 * 1000)
+{
+    const recaptchaCheckbox = instAddrPage.frameLocator("iframe[title='reCAPTCHA']").locator("#recaptcha-anchor")
+
+    try
+    {
+        await recaptchaCheckbox.waitFor({state: "visible", timeout: timeoutMs})
+    }
+    catch(e)
+    {
+        return //No challenge appeared within the wait - proceed as normal
+    }
+
+    await recaptchaCheckbox.click()
+    await instAddrPage.waitForTimeout(2 * 1000) //Give Google a moment to validate the click before the caller continues
+}
+
+//Logs the given InstAddr page into the shared account, handling the occasional reCAPTCHA checkbox challenge
+//(see DismissRecaptchaCheckboxIfPresent()) that can appear right after submitting the login form.
+async function LoginToInstAddr(instAddrPage)
+{
+    await instAddrPage.goto("https://m.kuku.lu/en.php")
+
+    await instAddrPage.locator(".mastermenuicon").first().click()//Config
+    await instAddrPage.locator("a[href*='pagemode_login']").click()//Account
+    await instAddrPage.locator("#link_loginform").click()
+    await instAddrPage.getByPlaceholder("AccountID").fill(info.instAddrAccountID)
+    await instAddrPage.locator("#user_password").fill(info.instAddrPassword)
+    await instAddrPage.locator("a[href*='checkLogin()']").click()
+    await DismissRecaptchaCheckboxIfPresent(instAddrPage)
+    await instAddrPage.locator("#area-confirm-dialog-button-ok").click()
+}
+
+//Logs into the shared InstAddr account and generates a brand-new, never-used temporary email address via its
+//"Create an address automatically" feature, so tests never need a manually maintained fresh-address fixture.
+//Returns the context/page (left open and logged in, so the caller can reuse it to check the inbox afterward) and the new address.
+async function CreateInstAddrTempEmail(browser)
+{
+    const instAddrContext = await browser.newContext()
+    const instAddrPage = await instAddrContext.newPage()
+    await LoginToInstAddr(instAddrPage)
+
+    await instAddrPage.getByRole("button", {name: "Create an address automatically"}).click()
+    await DismissRecaptchaCheckboxIfPresent(instAddrPage)
+    //NOTE: the page can also show an unrelated "account merge" notice using the same .noticebox class, so filter to the one confirming address creation
+    const newEmail = (await instAddrPage.locator("div.noticebox").filter({hasText: "has been created"}).locator("b").textContent()).trim()
+    await instAddrPage.getByRole("button", {name: "Close"}).click()//Close the address-created popup, or it blocks later nav clicks
+
+    return {instAddrContext, instAddrPage, email: newEmail}
+}
+
+//The InstAddr Inbox is one shared mailbox across every temp address ever created on the account, listing all mail
+//newest-first, so the "first" row is NOT reliably the confirmation mail for the address we just created - it can
+//just as easily be an older marketing email, or mail for an address a different/concurrent test run is using,
+//depending on exactly when each message was delivered relative to this call. This polls (via the Reload icon) until
+//a row addressed to expectedEmail actually shows up, then returns a locator scoped to that specific row.
+async function WaitForInstAddrMail(instAddrPage, expectedEmail, timeoutMs = 60 * 1000)
+{
+    const mailRow = instAddrPage.locator("a[id*='link_maildata']").filter({hasText: expectedEmail}).first()
+    const deadline = Date.now() + timeoutMs
+
+    while (true)
+    {
+        if (await mailRow.count() > 0) return mailRow
+
+        if (Date.now() > deadline)
+        {
+            throw new Error(`Timed out after ${timeoutMs}ms waiting for a mail addressed to ${expectedEmail} to arrive in InstAddr`)
+        }
+
+        await instAddrPage.locator("#image_reload").click()
+        await instAddrPage.waitForTimeout(3 * 1000)
+    }
+}
+
+//The birth date fields (#birth-year/#birth-month/#birth-day) render as real <select> elements but are kept
+//display:none in favor of a custom-styled dropdown widget, so Playwright's selectOption() times out waiting for them
+//to become visible. Drive the custom widget instead: click its trigger to open the dropdown, then click the option
+//matching the native <select>'s value (the widget mirrors the selection back into the hidden native select).
+async function SelectCustomBirthDropdown(arg_page, dataId, value)
+{
+    const container = arg_page.locator(`div.custom-select--birth[data-id='${dataId}']`)
+    await container.locator("div.select-selected").click()
+    await container.locator(`div.select-option[data-value='${value}']`).click()
 }
 
 //Tests
@@ -148,10 +256,12 @@ test('Tokyu Stay - Logout', async({page})=>
 
 
 //STATUS: OK
-//PRECONDITIONS: Update the email to use for Member Reg in const objects before running test
 //NOTES: Some refactoring required for the InstAddr page related code & add some additional assertion in the "SmartClub Confirm Details" page (the one with the edit button)
 test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 {
+    //Generate a fresh, never-used temporary email via InstAddr instead of relying on a manually-updated fixture
+    const {instAddrContext, instAddrPage, email: memberRegEmail} = await CreateInstAddrTempEmail(browser)
+
     const context1 = await browser.newContext()
     const page1 = await context1.newPage()
 
@@ -159,13 +269,13 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await expect(page1).toHaveTitle('Accommodation reservations | Tokyu Stay [Official]');
 
     await page1.locator("a[href*='mypage/register']").click()
-    
+
     //Ensure SmartClub page language is English (site no longer defaults to Japanese, so select explicitly instead of assuming position)
     await page1.waitForTimeout(3*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
     await page1.locator("button.p-header__translate__button").click()
     await page1.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
 
-    await page1.locator("input[name='email']").fill(info.memberReg_Email)
+    await page1.locator("input[name='email']").fill(memberRegEmail)
     await page1.locator("input[name='password']").fill(info.memberReg_Password)
     await page1.locator("input[name='password_confirm']").fill(info.memberReg_Password)
     await page1.locator("input[name='last_name']").fill(info.memberReg_LastName)
@@ -175,7 +285,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     {
         await page1.locator("div.select-selected").click()
         await page1.getByText(info.memberReg_Country).click()
-        
+
     }
     else
     {
@@ -192,21 +302,11 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     //NOTE: the "sent"/last word of this text renders as a sibling text node outside .eng-text-register__mail, so assert on the parent instead of an exact match on the span itself
     await expect(page1.locator(".eng-text-register__mail").locator("xpath=..")).toContainText("Confirmation email has been sent")
 
-    //PAGE 2
-    const instAddrContext = await browser.newContext()
-    const instAddrPage = await instAddrContext.newPage()
-    await instAddrPage.goto("https://m.kuku.lu/en.php")
-
-    await instAddrPage.locator(".mastermenuicon").first().click()//Config
-    await instAddrPage.locator("a[href*='pagemode_login']").click()//Account
-    await instAddrPage.locator("#link_loginform").click()
-    await instAddrPage.getByPlaceholder("AccountID").fill(info.instAddrAccountID)
-    await instAddrPage.locator("#user_password").fill(info.instAddrPassword)
-    await instAddrPage.locator("a[href*='checkLogin()']").click()
-    await instAddrPage.locator("#area-confirm-dialog-button-ok").click()
-
+    //Check the confirmation email using the same InstAddr session CreateInstAddrTempEmail() already logged into
     await instAddrPage.locator(".mastermenuicon").nth(2).click()
-    await instAddrPage.locator("a[id*='link_maildata']").first().click()
+    //NOTE: the shared inbox can list newer, unrelated mail above the one we actually want, so find the row by recipient instead of assuming it's first (see WaitForInstAddrMail())
+    const memberRegMailRow = await WaitForInstAddrMail(instAddrPage, memberRegEmail)
+    await memberRegMailRow.click()
 
     const frame = instAddrPage.frameLocator('iframe[name^="area_maildata_iframe_"]')
     const [page3] = await Promise.all
@@ -216,16 +316,16 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     ])
 
     //PAGE 3
-    await expect(page3.locator("div.register-gridList__data").nth(0)).toContainText(info.memberReg_Email)
+    await expect(page3.locator("div.register-gridList__data").nth(0)).toContainText(memberRegEmail)
     await expect(page3.locator("div.register-gridList__data").nth(1)).toContainText(info.memberReg_Country)
     await expect(page3.locator("div.register-gridList__data").nth(2)).toContainText(info.memberReg_LastName)
     await expect(page3.locator("div.register-gridList__data").nth(2)).toContainText(info.memberReg_FirstName)
     await expect(page3.locator("div.register-gridList__data").nth(3)).toContainText(info.memberReg_LastName_Kana)
     await expect(page3.locator("div.register-gridList__data").nth(3)).toContainText(info.memberReg_FirstName_Kana)
 
-    await page3.locator("#birth-year").selectOption("1923")
-    await page3.locator("#birth-month").selectOption("7")
-    await page3.locator("#birth-day").selectOption("23")
+    await SelectCustomBirthDropdown(page3, "birth-year", "1923")
+    await SelectCustomBirthDropdown(page3, "birth-month", "7")
+    await SelectCustomBirthDropdown(page3, "birth-day", "23")
     await page3.locator("label[for='gender-other']").click()
     await page3.locator("#postal_code").fill(info.memberReg_Zipcode)
     await page3.locator("#prefecture_or_state").fill(info.memberReg_State)
@@ -249,10 +349,12 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 });
 
 //STATUS: OK
-//PRECONDITIONS: Update the password to use for Reset Password in const objects before running test
 //Some refactoring required for the InstAddr page rlated code
 test('Tokyu Stay - Reset Password', async({browser, page})=>
 {
+    //Generate a fresh password each run so it never collides with whatever the account's password already is
+    const resetPW_Password = GenerateFreshPassword()
+
     //PAGE 1
     const context1 = await browser.newContext()
     const page1 = await context1.newPage()
@@ -280,15 +382,7 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     //Open InstAddr to check mail
     const instAddrContext = await browser.newContext()
     const instAddrPage = await instAddrContext.newPage()
-    await instAddrPage.goto("https://m.kuku.lu/en.php")
-
-    await instAddrPage.locator(".mastermenuicon").first().click()//Config
-    await instAddrPage.locator("a[href*='pagemode_login']").click()//Account
-    await instAddrPage.locator("#link_loginform").click()
-    await instAddrPage.getByPlaceholder("AccountID").fill(info.instAddrAccountID)
-    await instAddrPage.locator("#user_password").fill(info.instAddrPassword)
-    await instAddrPage.locator("a[href*='checkLogin()']").click()
-    await instAddrPage.locator("#area-confirm-dialog-button-ok").click()
+    await LoginToInstAddr(instAddrPage)
 
     await instAddrPage.locator(".mastermenuicon").nth(2).click()
     await instAddrPage.locator("a[id*='link_maildata']").first().click()
@@ -309,8 +403,8 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await btn2.click();
     await page2.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
 
-    await page2.getByPlaceholder("新しいパスワード / New password").fill(info.resetPW_Password)
-    await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(info.resetPW_Password)
+    await page2.getByPlaceholder("新しいパスワード / New password").fill(resetPW_Password)
+    await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(resetPW_Password)
     await page2.getByRole("button", {name: /Reset password/}).click()
     await page1.waitForTimeout(4*1000)
     await expect(page2.locator("p.title")).toContainText("Your password has been changed.")
@@ -325,7 +419,7 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await expect(page3).toHaveURL("https://test-smartclub.metroengines.jp/mypage/login")
 
     await page3.getByPlaceholder("アカウント名を入力").fill(info.resetPW_Email)
-    await page3.getByPlaceholder("パスワードを入力").fill(info.resetPW_Password)
+    await page3.getByPlaceholder("パスワードを入力").fill(resetPW_Password)
     await page3.locator("button.c-button").click()
     await page3.locator("div.space-x-2").waitFor()
     const pointVisible = await page3.locator("div.space-x-2").isVisible()
@@ -337,7 +431,7 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
 
 
 //STATUS: OK
-//PRECONDITIONS: Update the inputs for the fields to be edited in const objects, as well as the checkin/out date
+//PRECONDITIONS: Update the inputs for the fields to be edited in const objects (Check-In/Check-Out are now automatic - today/tomorrow)
 //Some refactoring could be done to streamline the code, otherwise it covers the requirements
 test('Tokyu Stay - Edit Profile', async({page})=>
 {
@@ -426,8 +520,23 @@ test('Tokyu Stay - Edit Profile', async({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
     //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
-    await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
+    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
+    await expect(bookNowButtons.first()).toBeVisible()
+    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
+    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
+    //other tests' bookings
+    const bookNowCount = await bookNowButtons.count()
+    let pickedAvailablePlan = false
+    for(let i = 0; i < bookNowCount; i++)
+    {
+        if(await bookNowButtons.nth(i).isEnabled())
+        {
+            await bookNowButtons.nth(i).click()
+            pickedAvailablePlan = true
+            break
+        }
+    }
+    expect(pickedAvailablePlan).toBeTruthy()
 
     await page1.waitForTimeout(4*1000)
     await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
@@ -509,7 +618,7 @@ test('Tokyu Stay - Point Information', async({page})=>
 });
 
 //STATUS: OK
-//PRECONDITIONS: Update the Check-In/Checkout dates before running this script
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
 test('Tokyu Stay - Logged In Reservation', async({page})=>
 {
     const page1 = await Login(page)
@@ -526,9 +635,23 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     await page1.getByRole("button", {name: "Search"}).click()
 
     //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
-    //NOTE: an unscoped global index into "Book now" buttons is fragile (the resale-plan section adds extra buttons, and sold-out rooms render disabled ones), so scope to a specific, stable plan group like the Edit Profile test does
-    await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
+    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
+    await expect(bookNowButtons.first()).toBeVisible()
+    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
+    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
+    //other tests' bookings
+    const bookNowCount = await bookNowButtons.count()
+    let pickedAvailablePlan = false
+    for(let i = 0; i < bookNowCount; i++)
+    {
+        if(await bookNowButtons.nth(i).isEnabled())
+        {
+            await bookNowButtons.nth(i).click()
+            pickedAvailablePlan = true
+            break
+        }
+    }
+    expect(pickedAvailablePlan).toBeTruthy()
 
     //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
     //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
@@ -575,7 +698,7 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 ///////////////////
 
 //STATUS: OK
-//PRECONDITIONS: Update the Check-In/Checkout dates before running this script
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
 test('Tokyu Stay - Reservation History', async ({page})=>
 {
     const page1 = await Login(page)
@@ -593,8 +716,23 @@ test('Tokyu Stay - Reservation History', async ({page})=>
     await page1.getByRole("button", {name: "Search"}).click()
 
     //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    await expect(page1.getByRole("button", {name: "Book now"}).first()).toBeVisible()
-    await page1.locator("#search-result-group-19190639").getByRole("button", {name: "Book now"}).nth(1).click()
+    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
+    await expect(bookNowButtons.first()).toBeVisible()
+    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
+    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
+    //other tests' bookings
+    const bookNowCount = await bookNowButtons.count()
+    let pickedAvailablePlan = false
+    for(let i = 0; i < bookNowCount; i++)
+    {
+        if(await bookNowButtons.nth(i).isEnabled())
+        {
+            await bookNowButtons.nth(i).click()
+            pickedAvailablePlan = true
+            break
+        }
+    }
+    expect(pickedAvailablePlan).toBeTruthy()
 
     await page1.waitForTimeout(4*1000)
     await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
@@ -694,6 +832,138 @@ test('Tokyu Stay - Reservation History', async ({page})=>
     await expect(page1.locator("li:visible").filter({hasText: "Plan name"}).locator("div")).toHaveText(/\S+/)
     await expect(page1.locator("li:visible").filter({hasText: "Estimated arrival time"}).locator("div")).toHaveText(/\S+/)
     await expect(page1.locator("li:visible").filter({hasText: "Total"}).last()).toContainText("¥") //Final total row (".last()" avoids matching the "Subtotal" row)
+
+    //await page1.pause()
+
+});
+
+
+///////////////////
+
+//STATUS: OK
+//Always creates a brand-new reservation on staging first (mirrors the "Logged In Reservation" test), then cancels
+//that exact reservation by its reservation number - this test never touches any pre-existing booking on the account
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
+test('Tokyu Stay - Cancel Reservation', async ({page})=>
+{
+    const page1 = await Login(page)
+
+    //Create a logged-in reservation (mirrors the "Logged In Reservation" test) so there's a reservation we know is safe to cancel
+    await page1.locator(".relative.bg-white").last().click()
+    await page1.getByText(info.hotelBranch).click()
+    await page1.locator(".text-lg").first().click()
+    //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
+    await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
+    await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
+    await page1.locator("button.w-full").nth(2).click()
+    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
+    await page1.getByRole("button", {name: "Confirm"}).click()
+    await page1.getByRole("button", {name: "Search"}).click()
+
+    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
+    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
+    await expect(bookNowButtons.first()).toBeVisible()
+    //NOTE: unlike the other booking tests, this test doesn't need a specific plan/room (it only needs any valid
+    //reservation to then cancel), so pick whichever "Book now" button is actually enabled instead of hardcoding a
+    //plan group ID - room inventory for a specific plan on today's date can run out from other tests' bookings
+    const bookNowCount = await bookNowButtons.count()
+    let pickedAvailablePlan = false
+    for(let i = 0; i < bookNowCount; i++)
+    {
+        if(await bookNowButtons.nth(i).isEnabled())
+        {
+            await bookNowButtons.nth(i).click()
+            pickedAvailablePlan = true
+            break
+        }
+    }
+    expect(pickedAvailablePlan).toBeTruthy()
+
+    await page1.waitForTimeout(4*1000)
+    await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
+    await page1.getByRole("option", {name: info.arrivalTime}).click()//Select a time slot in the dropdown
+    await page1.locator("textarea.w-full").fill("This is a reservation created via Playwright Automation, to be cancelled by this same test")//Fill in Remarks section
+
+    await page1.locator("#credit_card").click() //Click the "Credit Card" radio button
+    await page1.locator('[name="cardName"]').fill("SATIVEL")//Fill in Cardholder Name
+    await page1.locator('[name="cardNumber"]').pressSequentially("3528000000005006")//Fill in Card (must use pressSequentially, .fill() triggers "Invalid Card Number" on this masked input)
+    await page1.locator('[name="expiredDate"]').fill("0156")//Fill in Expiry Date
+    await page1.getByPlaceholder("CVC").fill("012")//Fill in CVV
+    await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
+    await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
+
+    //Make Playwright locate the button on the Payment Gateway modal and click it
+    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+
+    //ASSERTION: Check if the user has reached the Successfully Booked screen
+    await page.waitForTimeout(3 * 1000)
+    await expect(page1.locator("h1.text-secondary")).toHaveText("Successfully Booked")
+
+    //Grab the reservation number from the success URL so we cancel this exact booking and nothing else
+    const reservationNo = new URL(page1.url()).searchParams.get("reservationNo")
+    expect(reservationNo).toBeTruthy()
+
+    //GO TO BOOKINGS TAB
+    await page1.locator("a[href*='my-page/profile']").click()
+    await page1.getByRole("listitem").locator("a[href*='reservations']").click()
+    await expect(page1.getByRole("heading", {name: "Bookings"})).toBeVisible()
+    await page1.waitForLoadState("load")
+    await page1.waitForTimeout(2*1000) //Wait for hydration so the accordion buttons' click handlers are attached before we click them
+
+    //The account accumulates bookings across test runs, so the Upcoming list paginates (10 per page) and our new
+    //booking may land on a later page. The reservation number only renders once a card is expanded, so on each page
+    //expand every card (desktop layout only; the mobile layout duplicate stays hidden) and check for a match before
+    //moving to the next page.
+    let ourCard = page1.locator("div.w-full.bg-white.border-primary-light.border:visible").filter({hasText: reservationNo})
+    for(let pageNum = 0; pageNum < 20 && await ourCard.count() === 0; pageNum++)
+    {
+        const cards = page1.locator("div.w-full.bg-white.border-primary-light.border:visible")
+        const cardCount = await cards.count()
+        for(let i = 0; i < cardCount; i++)
+            await cards.nth(i).locator("button").first().click()
+
+        ourCard = page1.locator("div.w-full.bg-white.border-primary-light.border:visible").filter({hasText: reservationNo})
+        if(await ourCard.count() > 0)
+            break
+
+        const nextPageButton = page1.getByRole("button", {name: "Next"})
+        if(!(await nextPageButton.isVisible()) || !(await nextPageButton.isEnabled()))
+            break
+        await nextPageButton.click()
+        await page1.waitForTimeout(1*1000)
+    }
+
+    //ASSERTION: our newly created reservation was found (fails clearly instead of hanging if it wasn't on any page)
+    await expect(ourCard).toHaveCount(1)
+    await ourCard.getByRole("button", {name: "Details & QR"}).click()
+    await page1.waitForLoadState("load")
+
+    //CANCEL THE RESERVATION
+    await page1.getByRole("button", {name: "Cancel reservation"}).click()
+    //ASSERTION: the cancellation confirmation dialog appears, showing the plan we're about to cancel
+    await expect(page1.getByRole("heading", {name: "Do you want to cancel this plan?"})).toBeVisible()
+    await page1.getByRole("button", {name: "Yes, Cancel"}).click()
+
+    //ASSERTION: cancellation succeeded
+    const cancelSuccessDialog = page1.getByRole("dialog").filter({hasText: "Cancel Completed"})
+    await expect(cancelSuccessDialog).toBeVisible()
+    await cancelSuccessDialog.locator("svg").first().click()//Close the success dialog via its "X" icon (it has no accessible name, so scope to the first svg in the dialog, which is the close icon rather than the celebratory checkmark)
+
+    //Go back to Bookings and switch to the "Cancelled" tab
+    await page1.getByRole("link", {name: "Reservation List"}).click()
+    await expect(page1.getByRole("heading", {name: "Bookings"})).toBeVisible()
+    await page1.getByRole("link", {name: "Cancelled"}).click()
+    await page1.waitForLoadState("load")
+    await page1.waitForTimeout(2*1000) //Wait for hydration so the accordion buttons' click handlers are attached before we click them
+
+    //Expand every visible card on the Cancelled tab's first page and confirm our reservation is now listed there
+    const cancelledCards = page1.locator("div.w-full.bg-white.border-primary-light.border:visible")
+    const cancelledCardCount = await cancelledCards.count()
+    for(let i = 0; i < cancelledCardCount; i++)
+        await cancelledCards.nth(i).locator("button").first().click()
+
+    //ASSERTION: our cancelled reservation now appears under the Cancelled tab
+    await expect(page1.locator("div.w-full.bg-white.border-primary-light.border:visible").filter({hasText: reservationNo})).toHaveCount(1)
 
     //await page1.pause()
 
