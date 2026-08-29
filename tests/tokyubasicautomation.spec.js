@@ -94,7 +94,7 @@ const info =
     instAddrPassword:"BU1iapx42ol:Y5Dk",
 
     //CREATE, EDIT, CANCEL RESERVATION
-    hotelBranch: "Tokyu Stay Ginza(staging)",
+    hotelBranch: "Tokyu Stay Shimbashi(staging)",
     arrivalTime: "22:00"
 }
 
@@ -118,8 +118,37 @@ function GenerateFreshPassword()
 
 
 //Helper Functions
-async function Login(arg_page) 
-{   
+
+//SmartClub rolled out a Terms of Use revision, and any account that hasn't yet agreed to it gets redirected to an
+//interstitial /mypage/agreement page right after submitting login credentials (before being sent back to the Stay
+//site). The page has two quirks: (1) "Agree and log in" stays disabled until its (unclassed) terms container is
+//scrolled to the bottom, so it has to be scrolled via JS rather than a locator; (2) the page renders two overlapping
+//copies of the same modal (desktop/mobile duplicates) that both report as visible, so a plain click on the button
+//gets blocked by "intercepts pointer events" - click with force to route around that. Once an account agrees, this
+//page is skipped on all future logins for that account, so this is a one-time, no-op-afterwards detour.
+async function AgreeToTermsRevisionIfPresent(arg_page)
+{
+    if(!arg_page.url().includes("/mypage/agreement"))
+        return
+
+    await arg_page.evaluate(() =>
+    {
+        for(const el of document.querySelectorAll("*"))
+        {
+            const style = getComputedStyle(el)
+            if((style.overflowY === "auto" || style.overflowY === "scroll") && el.scrollHeight > el.clientHeight + 5)
+                el.scrollTop = el.scrollHeight
+        }
+    })
+
+    const agreeButton = arg_page.locator("#mypageAgreeButton").first()
+    await expect(agreeButton).toBeEnabled()
+    await agreeButton.click({force: true})
+    await arg_page.waitForURL("https://stg.reservation.tokyustay.co.jp/en")
+}
+
+async function Login(arg_page)
+{
     await arg_page.goto("https://stg.reservation.tokyustay.co.jp/en");
     await expect(arg_page).toHaveTitle('Accommodation reservations | Tokyu Stay [Official]');
     await arg_page.getByRole("button", {name: "Log In"}).click()
@@ -128,11 +157,74 @@ async function Login(arg_page)
     await arg_page.locator("input[name='email']").fill(info.fixedEmail)
     await arg_page.locator("input[name='password']").fill(info.fixedPassword)
     await arg_page.locator("button.c-button").click()
+    //NOTE: waits for either the Terms revision interstitial or the final homepage, so the check below is never racing the redirect
+    await arg_page.waitForURL(url => url.href.includes("/mypage/agreement") || url.href === "https://stg.reservation.tokyustay.co.jp/en")
+    await AgreeToTermsRevisionIfPresent(arg_page)
     await arg_page.locator("div.space-x-2").waitFor()
     const pointVisible = await arg_page.locator("div.space-x-2").isVisible()
     expect(pointVisible).toBeTruthy()
 
     return arg_page
+}
+
+//Selects the first enabled non-resale "Book now" button in the Available Plans grid and clicks it.
+//NOTE (2026-08-29): default drop is sorted cheap-first, so today the only enabled plan is a "[Resale Plan]" which is
+//NOT points-eligible (its payment page shows "Points to be earned: 0pt" and refuses point redemption). The booking
+//tests assert points > 0 / solit the payment-gateway modal, so they must pick a regular (non-resale) plan instead.
+//A resale card's container (div.relative.pt-4.space-y-4) contains "RESALE AVAILABLE" text; skip those. Non-resale
+//regular / membership plans still show "Book now" even when the resale one is the cheapest, so a non-resale result
+//remains findable. Falls back to any enabled plan if no non-resale one is enabled (so the helper never hangs) -
+//unless requireNonResale is true, in which case only a non-resale (Standard) plan may be picked and a missing one
+//fails the test rather than silently buying a resale plan.
+async function ClickFirstBookableNonResalePlan(page1, requireNonResale = false)
+{
+    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
+    await expect(bookNowButtons.first()).toBeVisible()
+
+    //Retry: a non-resale button may still be disabled (inventory/price still resolving) for a moment after the grid
+    //first renders, and the resale card is enabled instantly - a single pass then wrongly falls back to the resale plan.
+    for(let attempt = 0; attempt < 5; attempt++)
+    {
+        const bookNowCount = await bookNowButtons.count()
+        for(let i = 0; i < bookNowCount; i++)
+        {
+            const btn = bookNowButtons.nth(i)
+            if(!(await btn.isEnabled()))
+                continue
+
+            //Resale cards are not points-eligible; skip them so the Points-to-Be-Earned assertions hold.
+            const isResale = await btn.evaluate(el =>
+            {
+                let c = el
+                for(let k = 0; k < 6 && c.parentElement; k++) c = c.parentElement
+                return /RESALE AVAILABLE/i.test(c.innerText || "")
+            })
+
+            if(!isResale)
+            {
+                await btn.click()
+                return
+            }
+        }
+        await page1.waitForTimeout(800) //Grid still settling - let the non-resale buttons a moment to enable before the next scan
+    }
+
+    //No non-resale plan enabled within the poll window. When requireNonResale is set, that is a hard requirement
+    //(resale plans break the points assertions), so fail clearly instead of blindly falling back to a resale plan.
+    if(requireNonResale)
+        throw new Error("No enabled non-resale (Standard) plan was available to book")
+
+    //Otherwise fall back to the first enabled button so the flow still proceeds.
+    const bookNowCount = await bookNowButtons.count()
+    for(let i = 0; i < bookNowCount; i++)
+    {
+        if(await bookNowButtons.nth(i).isEnabled())
+        {
+            await bookNowButtons.nth(i).click()
+            return
+        }
+    }
+    throw new Error("No enabled 'Book now' button found in the Available Plans grid")
 }
 
 //InstAddr guards its login/address actions with an invisible Google reCAPTCHA that normally passes silently, but
@@ -235,15 +327,17 @@ test('Tokyu Stay - Login', async ({page})=>
 
 
 //STATUS: OK
+//NOTE: the account menu no longer opens a temporary side-list overlay - clicking the account name now navigates
+//straight to the Edit Profile page, which has a permanent sidebar with its own "Log out" item. That item opens a
+//single confirmation dialog (title "Come back soon!") with a "Log out" button, so the old two-step
+//dismiss-then-click-through-a-second-modal dance is gone.
 test('Tokyu Stay - Logout', async({page})=>
 {
     const returnedPage = await Login(page)
 
-    await returnedPage.locator("div div a.items-center").nth(2).click()//Click Account name
-    await returnedPage.getByRole("listitem").last().click()//Click Logout in the side list
-    await returnedPage.getByRole("button", {name: "Close Modal"}).click()
-    await returnedPage.getByRole("listitem").last().click()
-    await returnedPage.locator(".space-x-4").getByRole("button", {name: "LOG OUT"}).click()
+    await returnedPage.getByRole("link", {name: "Sativel Nathan"}).click()//Click Account name - navigates to Edit Profile page
+    await returnedPage.getByRole("listitem").filter({hasText: "Log out"}).click()//Click "Log out" in the sidebar - opens the confirmation dialog
+    await returnedPage.getByRole("dialog").getByRole("button", {name: "Log out"}).click()//Confirm in the "Come back soon!" dialog
 
     await returnedPage.getByRole("button", {name: "Log In"}).waitFor()
     const loginBtnVisible = await returnedPage.getByRole("button", {name: "Log In"}).isVisible()
@@ -332,13 +426,21 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await page3.locator("#street_address").fill(info.memberReg_City)
     await page3.locator("#building_name_and_number").fill(info.memberReg_Address)
     await page3.locator("#phone").fill(info.memberReg_PhoneNumber)
+    //NOTE: the site now requires an explicit opt-in/out choice for the SMARTCLUB email newsletter before it will let
+    //registration proceed - this field didn't exist previously, so default to declining it. Like the birth date
+    //selects and gender radios above, the native radio input itself is kept hidden in favor of a styled label, so
+    //click the label (id="off_email_newsletter_status") rather than the input directly.
+    await page3.locator("label[for='off_email_newsletter_status']").click()
     await page3.locator("button.c-button").click()
 
     await page3.locator("a.c-button__2").click()//Edit button
     await page3.locator("button.c-button").click()
     await page3.locator("button.c-button__1").click()//Save button
 
-    await expect(page3.locator("span.eng-text-register__mail").locator("xpath=..")).toContainText("Registration completed.")
+    //NOTE: the trailing "." now renders in its own span (a sibling of the "Registration completed" text, not glued
+    //to it), which leaves a single space before the period once whitespace is normalized - assert without the
+    //period instead of an exact "Registration completed." match
+    await expect(page3.locator("span.eng-text-register__mail").locator("xpath=..")).toContainText("Registration completed")
 
     await page3.locator("a.c-button").click()//Click "Service button"
 
@@ -421,6 +523,9 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page3.getByPlaceholder("アカウント名を入力").fill(info.resetPW_Email)
     await page3.getByPlaceholder("パスワードを入力").fill(resetPW_Password)
     await page3.locator("button.c-button").click()
+    //NOTE: see AgreeToTermsRevisionIfPresent() - this account may not have agreed to the Terms revision yet
+    await page3.waitForURL(url => url.href.includes("/mypage/agreement") || url.href === "https://stg.reservation.tokyustay.co.jp/en")
+    await AgreeToTermsRevisionIfPresent(page3)
     await page3.locator("div.space-x-2").waitFor()
     const pointVisible = await page3.locator("div.space-x-2").isVisible()
     await expect(pointVisible).toBeTruthy()
@@ -430,9 +535,16 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
 });         
 
 
-//STATUS: OK
+//STATUS: PARTIALLY BLOCKED (environment issue, not a test bug - see note below)
 //PRECONDITIONS: Update the inputs for the fields to be edited in const objects (Check-In/Check-Out are now automatic - today/tomorrow)
 //Some refactoring could be done to streamline the code, otherwise it covers the requirements
+//NOTE (2026-08-25): as of this writing, the Payment page's room-price lookup
+//(GET endpoint.staging.tripla.ai/hotels/{hotelCode}/rooms/price...) is returning HTTP 400 for every hotel/plan/date
+//combination tried, so the page always renders "Something went wrong!" instead of the actual form. This is a
+//staging backend/third-party (tripla) issue, not a frontend selector change - everything up to and including
+//"Book now" (hotel/date/room search, search results) was re-verified against the current UI and still matches.
+//The assertions below this point (payment-page field prefill, Kana/ZIP validation errors) cannot currently be
+//exercised until that API is fixed; re-verify them once it is.
 test('Tokyu Stay - Edit Profile', async({page})=>
 {
     const page1 = await Login(page)
@@ -519,24 +631,9 @@ test('Tokyu Stay - Edit Profile', async({page})=>
     await page1.locator("svg[stroke*='A7A7A7']").nth(1).click()
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
-    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
-    await expect(bookNowButtons.first()).toBeVisible()
-    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
-    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
-    //other tests' bookings
-    const bookNowCount = await bookNowButtons.count()
-    let pickedAvailablePlan = false
-    for(let i = 0; i < bookNowCount; i++)
-    {
-        if(await bookNowButtons.nth(i).isEnabled())
-        {
-            await bookNowButtons.nth(i).click()
-            pickedAvailablePlan = true
-            break
-        }
-    }
-    expect(pickedAvailablePlan).toBeTruthy()
+    //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
+    //points-eligible, which breaks the Points-to-Be-Earned assertions below.
+    await ClickFirstBookableNonResalePlan(page1)
 
     await page1.waitForTimeout(4*1000)
     await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
@@ -590,17 +687,17 @@ test('Tokyu Stay - Edit Profile', async({page})=>
 //STATUS: OK
 test('Tokyu Stay - Point Information', async({page})=>
 {
-    const arr_memberRanks = ["Regular Member", "Gold Member", "Platinum Member"]
+    //NOTE: the site renders this lowercase ("Platinum member", not "Platinum Member")
+    const arr_memberRanks = ["Regular member", "Gold member", "Platinum member"]
     const returnedPage = await Login(page)
 
     await returnedPage.locator("a[href*='my-page/point-information']").click()//Click Account name
     //await returnedPage.getByRole("listitem").locator("a[href*='point-information']").click()
 
     //ASSERTION: Check if the user's Membership Status is displayed as either Regular, Gold or Platinum Member
-    for(let i = 0; i < arr_memberRanks.count; i++)
-    {
-        await expect(returnedPage.locator(".text-primary-dark").nth(0)).toHaveText(arr_memberRanks[i])
-    }
+    //NOTE: was previously "arr_memberRanks.count", which is undefined on a plain array - the loop never ran and this
+    //assertion silently checked nothing. Assert membership rank is one of the known values instead.
+    expect(arr_memberRanks).toContain(await returnedPage.locator(".text-primary-dark").nth(0).textContent())
 
     //ASSERTION: Check if Points value is more or equal to 0 in Stay site
     const pointStringStay = await returnedPage.locator(".text-primary-dark").nth(1).textContent()
@@ -617,8 +714,16 @@ test('Tokyu Stay - Point Information', async({page})=>
     //await returnedPage.pause()
 });
 
-//STATUS: OK
+//STATUS: BLOCKED (environment issue, not a test bug - see note below)
 //Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
+//NOTE (2026-08-25): the Payment page is currently broken on staging for every hotel/plan/date combination tried
+//(confirmed on both Tokyu Stay Ginza(staging) and Tokyu Stay Shimbashi(staging), on today/tomorrow AND a week-out
+//date range, on both resale and regular membership plans) - it renders "Something went wrong!" instead of the actual
+//payment form. The browser console shows the cause: GET endpoint.staging.tripla.ai/hotels/{hotelCode}/rooms/price
+//returns HTTP 400. This is a staging backend/third-party (tripla) issue, not a frontend UI change - the search flow
+//up to and including "Book now" was re-verified against the current UI and still matches exactly. This test (and
+//Reservation History / Cancel Reservation, which depend on completing this same booking flow) cannot pass until
+//that API is fixed; re-run once it is to confirm the rest of the flow below still matches.
 test('Tokyu Stay - Logged In Reservation', async({page})=>
 {
     const page1 = await Login(page)
@@ -634,24 +739,9 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
 
-    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
-    await expect(bookNowButtons.first()).toBeVisible()
-    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
-    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
-    //other tests' bookings
-    const bookNowCount = await bookNowButtons.count()
-    let pickedAvailablePlan = false
-    for(let i = 0; i < bookNowCount; i++)
-    {
-        if(await bookNowButtons.nth(i).isEnabled())
-        {
-            await bookNowButtons.nth(i).click()
-            pickedAvailablePlan = true
-            break
-        }
-    }
-    expect(pickedAvailablePlan).toBeTruthy()
+    //ASSERTION: a bookable result appears, and pick one. MUST be a non-resale (Standard) plan: resale plans are not
+    //points-eligible, which breaks the Points-to-Be-Earned assertions below - so require non-resale and fail if none is bookable.
+    await ClickFirstBookableNonResalePlan(page1, true)
 
     //ASSERTION: Check if this is a Logged-In Reservation by seeing if Points To Be Earned is > 0, because only logged in reservation gives points
     //The reason the assertion is written like this is because even after the DOMcontent is loaded, the points to be earned is still shown as 0
@@ -697,8 +787,10 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 
 ///////////////////
 
-//STATUS: OK
+//STATUS: BLOCKED (environment issue, not a test bug - see note on "Logged In Reservation" above)
 //Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
+//NOTE (2026-08-25): this test creates its reservation the same way "Logged In Reservation" does, so it's blocked by
+//the same staging Payment-page/tripla rooms-price 400 error until that's fixed.
 test('Tokyu Stay - Reservation History', async ({page})=>
 {
     const page1 = await Login(page)
@@ -715,24 +807,9 @@ test('Tokyu Stay - Reservation History', async ({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
 
-    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
-    await expect(bookNowButtons.first()).toBeVisible()
-    //NOTE: this test doesn't need a specific plan/room, so pick whichever "Book now" button is actually enabled
-    //instead of hardcoding a plan group ID - room inventory for a specific plan on today's date can run out from
-    //other tests' bookings
-    const bookNowCount = await bookNowButtons.count()
-    let pickedAvailablePlan = false
-    for(let i = 0; i < bookNowCount; i++)
-    {
-        if(await bookNowButtons.nth(i).isEnabled())
-        {
-            await bookNowButtons.nth(i).click()
-            pickedAvailablePlan = true
-            break
-        }
-    }
-    expect(pickedAvailablePlan).toBeTruthy()
+    //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
+    //points-eligible, which breaks the Points-to-Be-Earned assertions below.
+    await ClickFirstBookableNonResalePlan(page1)
 
     await page1.waitForTimeout(4*1000)
     await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
@@ -840,10 +917,12 @@ test('Tokyu Stay - Reservation History', async ({page})=>
 
 ///////////////////
 
-//STATUS: OK
+//STATUS: BLOCKED (environment issue, not a test bug - see note on "Logged In Reservation" above)
 //Always creates a brand-new reservation on staging first (mirrors the "Logged In Reservation" test), then cancels
 //that exact reservation by its reservation number - this test never touches any pre-existing booking on the account
 //Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
+//NOTE (2026-08-25): this test creates its reservation the same way "Logged In Reservation" does, so it's blocked by
+//the same staging Payment-page/tripla rooms-price 400 error until that's fixed.
 test('Tokyu Stay - Cancel Reservation', async ({page})=>
 {
     const page1 = await Login(page)
@@ -860,24 +939,9 @@ test('Tokyu Stay - Cancel Reservation', async ({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()
     await page1.getByRole("button", {name: "Search"}).click()
 
-    //ASSERTION: the "Available Plans" heading no longer exists in the current UI; assert on a bookable result appearing instead
-    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
-    await expect(bookNowButtons.first()).toBeVisible()
-    //NOTE: unlike the other booking tests, this test doesn't need a specific plan/room (it only needs any valid
-    //reservation to then cancel), so pick whichever "Book now" button is actually enabled instead of hardcoding a
-    //plan group ID - room inventory for a specific plan on today's date can run out from other tests' bookings
-    const bookNowCount = await bookNowButtons.count()
-    let pickedAvailablePlan = false
-    for(let i = 0; i < bookNowCount; i++)
-    {
-        if(await bookNowButtons.nth(i).isEnabled())
-        {
-            await bookNowButtons.nth(i).click()
-            pickedAvailablePlan = true
-            break
-        }
-    }
-    expect(pickedAvailablePlan).toBeTruthy()
+    //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
+    //eligible for the payment-gateway modal this test relies on.
+    await ClickFirstBookableNonResalePlan(page1)
 
     await page1.waitForTimeout(4*1000)
     await page1.getByRole("button", {name: "Select one"}).click()//Open the "Select Arrival Time" dropdown
@@ -950,7 +1014,12 @@ test('Tokyu Stay - Cancel Reservation', async ({page})=>
     await cancelSuccessDialog.locator("svg").first().click()//Close the success dialog via its "X" icon (it has no accessible name, so scope to the first svg in the dialog, which is the close icon rather than the celebratory checkmark)
 
     //Go back to Bookings and switch to the "Cancelled" tab
-    await page1.getByRole("link", {name: "Reservation List"}).click()
+    //NOTE: the confirm-cancel dialog (and occasionally a stale headlessui-portal copy of it) can still be intercepting
+    //pointer events here even though we've already clicked "Yes, Cancel" and dismissed the success dialog. The leftover is
+    //an <h3> inside a headlessui portal (not necessarily a role=dialog), so target the heading text; then force-click the
+    //link so a leftover portal can't block navigation if it hasn't fully detached.
+    await page1.getByRole("heading", {name: "Do you want to cancel this plan?"}).waitFor({state: "hidden", timeout: 15 * 1000}).catch(()=>{})//Best-effort; proceed even if a copy lingers
+    await page1.getByRole("link", {name: "Reservation List"}).click({force: true})
     await expect(page1.getByRole("heading", {name: "Bookings"})).toBeVisible()
     await page1.getByRole("link", {name: "Cancelled"}).click()
     await page1.waitForLoadState("load")
