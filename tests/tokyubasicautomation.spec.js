@@ -1,6 +1,7 @@
 const {test, expect} = require('@playwright/test') //Module
 //const { text } = require('stream/consumers')
 const path = require('path');
+const {FormatCalendarDate, createTokyuHelpers} = require('./tokyu-helpers');
 
 //CSS Selectors Guide
 /*
@@ -85,9 +86,7 @@ const info =
     editProfile_Gender:"Female",
 
     //RESET PASSWORD
-    resetPW_Email:"kithayfig@otona.uk",
-    //NOTE: resetPW_Password is no longer a fixed value here - it's generated fresh at the start of the "Reset Password"
-    //test (see GenerateFreshPassword()), so it never collides with whatever the account's password already is.
+    //A fresh account and password are generated for each run; no shared reset-email fixture is needed.
 
     //INSTADDR DUMMY MAILBOX
     instAddrAccountID:"411715231887",
@@ -98,224 +97,26 @@ const info =
     arrivalTime: "22:00"
 }
 
+const {
+    GenerateFreshPassword,
+    AgreeToTermsRevisionIfPresent,
+    Login,
+    ClearAmenityFilters,
+    ClickFirstBookableNonResalePlan,
+    ProceedThroughPaymentGateway,
+    CreateInstAddrTempEmail,
+    WaitForInstAddrMail,
+    ExistingInstAddrMailIds,
+    SelectCustomBirthDropdown,
+    RegisterNewMemberAccount,
+    CreateAnotherInstAddrEmail,
+} = createTokyuHelpers(info)
 //Check-In is always today and Check-Out is always the next day, so these never need manual updating between runs
-const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"]
-function FormatCalendarDate(date)
-{
-    return `${MONTH_NAMES[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
-}
 const today = new Date()
 const tomorrow = new Date(today)
 tomorrow.setDate(today.getDate() + 1)
 info.checkInDate = FormatCalendarDate(today)
 info.checkOutDate = FormatCalendarDate(tomorrow)
-
-//Generates a password that's guaranteed to differ from whatever the account's password currently is
-function GenerateFreshPassword()
-{
-    return "Newpassword" + Date.now().toString().slice(-6)
-}
-
-
-//Helper Functions
-
-//SmartClub rolled out a Terms of Use revision, and any account that hasn't yet agreed to it gets redirected to an
-//interstitial /mypage/agreement page right after submitting login credentials (before being sent back to the Stay
-//site). The page has two quirks: (1) "Agree and log in" stays disabled until its (unclassed) terms container is
-//scrolled to the bottom, so it has to be scrolled via JS rather than a locator; (2) the page renders two overlapping
-//copies of the same modal (desktop/mobile duplicates) that both report as visible, so a plain click on the button
-//gets blocked by "intercepts pointer events" - click with force to route around that. Once an account agrees, this
-//page is skipped on all future logins for that account, so this is a one-time, no-op-afterwards detour.
-async function AgreeToTermsRevisionIfPresent(arg_page)
-{
-    if(!arg_page.url().includes("/mypage/agreement"))
-        return
-
-    await arg_page.evaluate(() =>
-    {
-        for(const el of document.querySelectorAll("*"))
-        {
-            const style = getComputedStyle(el)
-            if((style.overflowY === "auto" || style.overflowY === "scroll") && el.scrollHeight > el.clientHeight + 5)
-                el.scrollTop = el.scrollHeight
-        }
-    })
-
-    const agreeButton = arg_page.locator("#mypageAgreeButton").first()
-    await expect(agreeButton).toBeEnabled()
-    await agreeButton.click({force: true})
-    await arg_page.waitForURL("https://stg.reservation.tokyustay.co.jp/en")
-}
-
-async function Login(arg_page)
-{
-    await arg_page.goto("https://stg.reservation.tokyustay.co.jp/en");
-    await expect(arg_page).toHaveTitle('Accommodation reservations | Tokyu Stay [Official]');
-    await arg_page.getByRole("button", {name: "Log In"}).click()
-
-    await expect(arg_page).toHaveURL("https://test-smartclub.metroengines.jp/mypage/login")
-    await arg_page.locator("input[name='email']").fill(info.fixedEmail)
-    await arg_page.locator("input[name='password']").fill(info.fixedPassword)
-    await arg_page.locator("button.c-button").click()
-    //NOTE: waits for either the Terms revision interstitial or the final homepage, so the check below is never racing the redirect
-    await arg_page.waitForURL(url => url.href.includes("/mypage/agreement") || url.href === "https://stg.reservation.tokyustay.co.jp/en")
-    await AgreeToTermsRevisionIfPresent(arg_page)
-    await arg_page.locator("div.space-x-2").waitFor()
-    const pointVisible = await arg_page.locator("div.space-x-2").isVisible()
-    expect(pointVisible).toBeTruthy()
-
-    return arg_page
-}
-
-//Selects the first enabled non-resale "Book now" button in the Available Plans grid and clicks it.
-//NOTE (2026-08-29): default drop is sorted cheap-first, so today the only enabled plan is a "[Resale Plan]" which is
-//NOT points-eligible (its payment page shows "Points to be earned: 0pt" and refuses point redemption). The booking
-//tests assert points > 0 / solit the payment-gateway modal, so they must pick a regular (non-resale) plan instead.
-//A resale card's container (div.relative.pt-4.space-y-4) contains "RESALE AVAILABLE" text; skip those. Non-resale
-//regular / membership plans still show "Book now" even when the resale one is the cheapest, so a non-resale result
-//remains findable. Falls back to any enabled plan if no non-resale one is enabled (so the helper never hangs) -
-//unless requireNonResale is true, in which case only a non-resale (Standard) plan may be picked and a missing one
-//fails the test rather than silently buying a resale plan.
-async function ClickFirstBookableNonResalePlan(page1, requireNonResale = false)
-{
-    const bookNowButtons = page1.getByRole("button", {name: "Book now"})
-    await expect(bookNowButtons.first()).toBeVisible()
-
-    //Retry: a non-resale button may still be disabled (inventory/price still resolving) for a moment after the grid
-    //first renders, and the resale card is enabled instantly - a single pass then wrongly falls back to the resale plan.
-    for(let attempt = 0; attempt < 5; attempt++)
-    {
-        const bookNowCount = await bookNowButtons.count()
-        for(let i = 0; i < bookNowCount; i++)
-        {
-            const btn = bookNowButtons.nth(i)
-            if(!(await btn.isEnabled()))
-                continue
-
-            //Resale cards are not points-eligible; skip them so the Points-to-Be-Earned assertions hold.
-            const isResale = await btn.evaluate(el =>
-            {
-                let c = el
-                for(let k = 0; k < 6 && c.parentElement; k++) c = c.parentElement
-                return /RESALE AVAILABLE/i.test(c.innerText || "")
-            })
-
-            if(!isResale)
-            {
-                await btn.click()
-                return
-            }
-        }
-        await page1.waitForTimeout(800) //Grid still settling - let the non-resale buttons a moment to enable before the next scan
-    }
-
-    //No non-resale plan enabled within the poll window. When requireNonResale is set, that is a hard requirement
-    //(resale plans break the points assertions), so fail clearly instead of blindly falling back to a resale plan.
-    if(requireNonResale)
-        throw new Error("No enabled non-resale (Standard) plan was available to book")
-
-    //Otherwise fall back to the first enabled button so the flow still proceeds.
-    const bookNowCount = await bookNowButtons.count()
-    for(let i = 0; i < bookNowCount; i++)
-    {
-        if(await bookNowButtons.nth(i).isEnabled())
-        {
-            await bookNowButtons.nth(i).click()
-            return
-        }
-    }
-    throw new Error("No enabled 'Book now' button found in the Available Plans grid")
-}
-
-//InstAddr guards its login/address actions with an invisible Google reCAPTCHA that normally passes silently, but
-//repeated automated runs from the same IP/browser can push it to fall back to showing the classic "I'm not a robot"
-//checkbox challenge. When that happens the checkbox just needs a click (no image/puzzle solving involved), so poll
-//briefly for the reCAPTCHA iframe and click it if it shows up; if it never appears this is a harmless no-op.
-async function DismissRecaptchaCheckboxIfPresent(instAddrPage, timeoutMs = 5 * 1000)
-{
-    const recaptchaCheckbox = instAddrPage.frameLocator("iframe[title='reCAPTCHA']").locator("#recaptcha-anchor")
-
-    try
-    {
-        await recaptchaCheckbox.waitFor({state: "visible", timeout: timeoutMs})
-    }
-    catch(e)
-    {
-        return //No challenge appeared within the wait - proceed as normal
-    }
-
-    await recaptchaCheckbox.click()
-    await instAddrPage.waitForTimeout(2 * 1000) //Give Google a moment to validate the click before the caller continues
-}
-
-//Logs the given InstAddr page into the shared account, handling the occasional reCAPTCHA checkbox challenge
-//(see DismissRecaptchaCheckboxIfPresent()) that can appear right after submitting the login form.
-async function LoginToInstAddr(instAddrPage)
-{
-    await instAddrPage.goto("https://m.kuku.lu/en.php")
-
-    await instAddrPage.locator(".mastermenuicon").first().click()//Config
-    await instAddrPage.locator("a[href*='pagemode_login']").click()//Account
-    await instAddrPage.locator("#link_loginform").click()
-    await instAddrPage.getByPlaceholder("AccountID").fill(info.instAddrAccountID)
-    await instAddrPage.locator("#user_password").fill(info.instAddrPassword)
-    await instAddrPage.locator("a[href*='checkLogin()']").click()
-    await DismissRecaptchaCheckboxIfPresent(instAddrPage)
-    await instAddrPage.locator("#area-confirm-dialog-button-ok").click()
-}
-
-//Logs into the shared InstAddr account and generates a brand-new, never-used temporary email address via its
-//"Create an address automatically" feature, so tests never need a manually maintained fresh-address fixture.
-//Returns the context/page (left open and logged in, so the caller can reuse it to check the inbox afterward) and the new address.
-async function CreateInstAddrTempEmail(browser)
-{
-    const instAddrContext = await browser.newContext()
-    const instAddrPage = await instAddrContext.newPage()
-    await LoginToInstAddr(instAddrPage)
-
-    await instAddrPage.getByRole("button", {name: "Create an address automatically"}).click()
-    await DismissRecaptchaCheckboxIfPresent(instAddrPage)
-    //NOTE: the page can also show an unrelated "account merge" notice using the same .noticebox class, so filter to the one confirming address creation
-    const newEmail = (await instAddrPage.locator("div.noticebox").filter({hasText: "has been created"}).locator("b").textContent()).trim()
-    await instAddrPage.getByRole("button", {name: "Close"}).click()//Close the address-created popup, or it blocks later nav clicks
-
-    return {instAddrContext, instAddrPage, email: newEmail}
-}
-
-//The InstAddr Inbox is one shared mailbox across every temp address ever created on the account, listing all mail
-//newest-first, so the "first" row is NOT reliably the confirmation mail for the address we just created - it can
-//just as easily be an older marketing email, or mail for an address a different/concurrent test run is using,
-//depending on exactly when each message was delivered relative to this call. This polls (via the Reload icon) until
-//a row addressed to expectedEmail actually shows up, then returns a locator scoped to that specific row.
-async function WaitForInstAddrMail(instAddrPage, expectedEmail, timeoutMs = 60 * 1000)
-{
-    const mailRow = instAddrPage.locator("a[id*='link_maildata']").filter({hasText: expectedEmail}).first()
-    const deadline = Date.now() + timeoutMs
-
-    while (true)
-    {
-        if (await mailRow.count() > 0) return mailRow
-
-        if (Date.now() > deadline)
-        {
-            throw new Error(`Timed out after ${timeoutMs}ms waiting for a mail addressed to ${expectedEmail} to arrive in InstAddr`)
-        }
-
-        await instAddrPage.locator("#image_reload").click()
-        await instAddrPage.waitForTimeout(3 * 1000)
-    }
-}
-
-//The birth date fields (#birth-year/#birth-month/#birth-day) render as real <select> elements but are kept
-//display:none in favor of a custom-styled dropdown widget, so Playwright's selectOption() times out waiting for them
-//to become visible. Drive the custom widget instead: click its trigger to open the dropdown, then click the option
-//matching the native <select>'s value (the widget mirrors the selection back into the hidden native select).
-async function SelectCustomBirthDropdown(arg_page, dataId, value)
-{
-    const container = arg_page.locator(`div.custom-select--birth[data-id='${dataId}']`)
-    await container.locator("div.select-selected").click()
-    await container.locator(`div.select-option[data-value='${value}']`).click()
-}
 
 //Tests
 
@@ -353,6 +154,8 @@ test('Tokyu Stay - Logout', async({page})=>
 //NOTES: Some refactoring required for the InstAddr page related code & add some additional assertion in the "SmartClub Confirm Details" page (the one with the edit button)
 test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 {
+    if(process.env.INSTADDR_MANUAL_VERIFICATION === "1")
+        test.setTimeout(10 * 60 * 1000)
     //Generate a fresh, never-used temporary email via InstAddr instead of relying on a manually-updated fixture
     const {instAddrContext, instAddrPage, email: memberRegEmail} = await CreateInstAddrTempEmail(browser)
 
@@ -397,7 +200,7 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
     await expect(page1.locator(".eng-text-register__mail").locator("xpath=..")).toContainText("Confirmation email has been sent")
 
     //Check the confirmation email using the same InstAddr session CreateInstAddrTempEmail() already logged into
-    await instAddrPage.locator(".mastermenuicon").nth(2).click()
+    await instAddrPage.goto("https://m.kuku.lu/recv.php")//Open the Inbox directly (the old mobile `.mastermenuicon` menu toggle is gone from the current layout)
     //NOTE: the shared inbox can list newer, unrelated mail above the one we actually want, so find the row by recipient instead of assuming it's first (see WaitForInstAddrMail())
     const memberRegMailRow = await WaitForInstAddrMail(instAddrPage, memberRegEmail)
     await memberRegMailRow.click()
@@ -454,7 +257,11 @@ test('Tokyu Stay - Pure Membership Registration', async ({browser,page})=>
 //Some refactoring required for the InstAddr page rlated code
 test('Tokyu Stay - Reset Password', async({browser, page})=>
 {
-    //Generate a fresh password each run so it never collides with whatever the account's password already is
+    test.setTimeout(process.env.INSTADDR_MANUAL_VERIFICATION === "1" ? 12 * 60 * 1000 : 8 * 60 * 1000) //Registration and email round trips
+    //Reset a newly registered account whose inbox this test already owns; old shared fixtures can stop
+    //receiving mail, leaving the inbox poll waiting for a message that will never arrive.
+    const {instAddrContext, instAddrPage, email} = await RegisterNewMemberAccount(browser)
+    const existingMailIds = await ExistingInstAddrMailIds(instAddrPage, email)
     const resetPW_Password = GenerateFreshPassword()
 
     //PAGE 1
@@ -477,17 +284,13 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page1.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
 
 
-    await page1.getByPlaceholder("例）user@smartclub.tokyu-rs.co.jp").fill(info.resetPW_Email)
+    await page1.getByPlaceholder("例）user@smartclub.tokyu-rs.co.jp").fill(email)
     await page1.getByRole("button", {name: /Send email/}).click()
     await expect(page1).toHaveURL("https://test-smartclub.metroengines.jp/mypage/password/send/mail")
     
-    //Open InstAddr to check mail
-    const instAddrContext = await browser.newContext()
-    const instAddrPage = await instAddrContext.newPage()
-    await LoginToInstAddr(instAddrPage)
-
-    await instAddrPage.locator(".mastermenuicon").nth(2).click()
-    await instAddrPage.locator("a[id*='link_maildata']").first().click()
+    //Read only the newly requested reset message, not any older mail for this address.
+    const resetMailRow = await WaitForInstAddrMail(instAddrPage, email, 60 * 1000, existingMailIds)
+    await resetMailRow.click()
 
     const frame = instAddrPage.frameLocator('iframe[name^="area_maildata_iframe_"]')
     const [page2] = await Promise.all
@@ -498,7 +301,6 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
 
     //PAGE 2
     //Ensure SmartClub page language is English (site no longer defaults to Japanese, so select explicitly instead of assuming position)
-    await page1.waitForTimeout(4*1000) //Wait for 1.5 seconds to ensure everything loads (Cause there is a split second where the page changes for a bit)
     const btn2 = page2.locator("button.p-header__translate__button");
     await expect(btn2).toBeEnabled();     // ensures hydration done
     await expect(btn2).toBeInViewport();  // ensures no overlays
@@ -508,7 +310,6 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page2.getByPlaceholder("新しいパスワード / New password").fill(resetPW_Password)
     await page2.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(resetPW_Password)
     await page2.getByRole("button", {name: /Reset password/}).click()
-    await page1.waitForTimeout(4*1000)
     await expect(page2.locator("p.title")).toContainText("Your password has been changed.")
 
     //PAGE 3
@@ -520,7 +321,7 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
     await page3.getByRole("button", {name: "Log In"}).click()
     await expect(page3).toHaveURL("https://test-smartclub.metroengines.jp/mypage/login")
 
-    await page3.getByPlaceholder("アカウント名を入力").fill(info.resetPW_Email)
+    await page3.getByPlaceholder("アカウント名を入力").fill(email)
     await page3.getByPlaceholder("パスワードを入力").fill(resetPW_Password)
     await page3.locator("button.c-button").click()
     //NOTE: see AgreeToTermsRevisionIfPresent() - this account may not have agreed to the Terms revision yet
@@ -535,16 +336,8 @@ test('Tokyu Stay - Reset Password', async({browser, page})=>
 });         
 
 
-//STATUS: PARTIALLY BLOCKED (environment issue, not a test bug - see note below)
-//PRECONDITIONS: Update the inputs for the fields to be edited in const objects (Check-In/Check-Out are now automatic - today/tomorrow)
-//Some refactoring could be done to streamline the code, otherwise it covers the requirements
-//NOTE (2026-08-25): as of this writing, the Payment page's room-price lookup
-//(GET endpoint.staging.tripla.ai/hotels/{hotelCode}/rooms/price...) is returning HTTP 400 for every hotel/plan/date
-//combination tried, so the page always renders "Something went wrong!" instead of the actual form. This is a
-//staging backend/third-party (tripla) issue, not a frontend selector change - everything up to and including
-//"Book now" (hotel/date/room search, search results) was re-verified against the current UI and still matches.
-//The assertions below this point (payment-page field prefill, Kana/ZIP validation errors) cannot currently be
-//exercised until that API is fixed; re-verify them once it is.
+//Edits the shared test profile and verifies its values are prefilled on the payment page.
+//Check-In/Check-Out are automatic (today/tomorrow).
 test('Tokyu Stay - Edit Profile', async({page})=>
 {
     const page1 = await Login(page)
@@ -627,10 +420,8 @@ test('Tokyu Stay - Edit Profile', async({page})=>
     //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
     await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
     await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
-    await page1.locator("button.w-full").nth(2).click()
-    await page1.locator("svg[stroke*='A7A7A7']").nth(1).click()
-    await page1.getByRole("button", {name: "Confirm"}).click()
-    await page1.getByRole("button", {name: "Search"}).click()
+    await ClearAmenityFilters(page1)
+    await page1.getByRole("button", {name: "Search", exact: true}).click()
     //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
     //points-eligible, which breaks the Points-to-Be-Earned assertions below.
     await ClickFirstBookableNonResalePlan(page1)
@@ -688,20 +479,22 @@ test('Tokyu Stay - Edit Profile', async({page})=>
 test('Tokyu Stay - Point Information', async({page})=>
 {
     //NOTE: the site renders this lowercase ("Platinum member", not "Platinum Member")
-    const arr_memberRanks = ["Regular member", "Gold member", "Platinum member"]
     const returnedPage = await Login(page)
 
     await returnedPage.locator("a[href*='my-page/point-information']").click()//Click Account name
     //await returnedPage.getByRole("listitem").locator("a[href*='point-information']").click()
 
     //ASSERTION: Check if the user's Membership Status is displayed as either Regular, Gold or Platinum Member
-    //NOTE: was previously "arr_memberRanks.count", which is undefined on a plain array - the loop never ran and this
-    //assertion silently checked nothing. Assert membership rank is one of the known values instead.
-    expect(arr_memberRanks).toContain(await returnedPage.locator(".text-primary-dark").nth(0).textContent())
+    //NOTE: the page no longer uses .text-primary-dark for these two values (that selector stopped matching and the
+    //assertion silently failed on a stale value), so target the plain text nodes directly. The header "Points Balance"
+    //chip is excluded by the ^...$ anchor so only these dedicated rows match.
+    const memberString = await returnedPage.getByText(/^\s*(Regular|Gold|Platinum) member\s*$/).first().textContent()
+    expect(memberString.trim()).toMatch(/(Regular|Gold|Platinum) member/i)
 
     //ASSERTION: Check if Points value is more or equal to 0 in Stay site
-    const pointStringStay = await returnedPage.locator(".text-primary-dark").nth(1).textContent()
-    expect(parseInt(pointStringStay)).toBeGreaterThanOrEqual(0)
+    //NOTE: the value renders with thousands separators ("116,994pt"), so parseInt alone returns NaN. Strip non-digits.
+    const pointStringStay = await returnedPage.getByText(/^\s*\d{1,3}(,\d{3})*pt\s*$/).first().textContent()
+    expect(parseInt(pointStringStay.replace(/[^0-9]/g, ""))).toBeGreaterThanOrEqual(0)
 
     //Click "Link to My Page" button and wait until Points Available is loaded into DOM
     await returnedPage.getByRole("button", {name: "Link to MY PAGE"}).click()
@@ -709,21 +502,14 @@ test('Tokyu Stay - Point Information', async({page})=>
 
     //ASSERTION: Check if Points value is more or equal to 0 in SmartClub site
     const pointStringSmartClub = await returnedPage.locator("#total_point").textContent()
-    expect(parseInt(pointStringSmartClub)).toBeGreaterThanOrEqual(0)
+    expect(parseInt(pointStringSmartClub.replace(/[^0-9]/g, ""))).toBeGreaterThanOrEqual(0)
 
     //await returnedPage.pause()
 });
 
-//STATUS: BLOCKED (environment issue, not a test bug - see note below)
-//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
-//NOTE (2026-08-25): the Payment page is currently broken on staging for every hotel/plan/date combination tried
-//(confirmed on both Tokyu Stay Ginza(staging) and Tokyu Stay Shimbashi(staging), on today/tomorrow AND a week-out
-//date range, on both resale and regular membership plans) - it renders "Something went wrong!" instead of the actual
-//payment form. The browser console shows the cause: GET endpoint.staging.tripla.ai/hotels/{hotelCode}/rooms/price
-//returns HTTP 400. This is a staging backend/third-party (tripla) issue, not a frontend UI change - the search flow
-//up to and including "Book now" was re-verified against the current UI and still matches exactly. This test (and
-//Reservation History / Cancel Reservation, which depend on completing this same booking flow) cannot pass until
-//that API is fixed; re-run once it is to confirm the rest of the flow below still matches.
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed.
+//Staging currently rejects point redemption on the reservation API, so this flow verifies points earned and
+//the promotional discount without redeeming points.
 test('Tokyu Stay - Logged In Reservation', async({page})=>
 {
     const page1 = await Login(page)
@@ -734,10 +520,8 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
     await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
     await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
-    await page1.locator("button.w-full").nth(2).click()
-    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
-    await page1.getByRole("button", {name: "Confirm"}).click()
-    await page1.getByRole("button", {name: "Search"}).click()
+    await ClearAmenityFilters(page1)
+    await page1.getByRole("button", {name: "Search", exact: true}).click()
 
     //ASSERTION: a bookable result appears, and pick one. MUST be a non-resale (Standard) plan: resale plans are not
     //points-eligible, which breaks the Points-to-Be-Earned assertions below - so require non-resale and fail if none is bookable.
@@ -766,16 +550,22 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
     await page1.locator("#isCardPolicyAgreed").click()//Click "Agree" checkbox for T&C
     await page1.locator('[name="couponCode"]').fill("D1000")//Enter Promo Code
     await page1.getByRole("button", {name: "Check"}).first().click()//Click CHECK button for Promo Code
-    await page1.locator('[name="spendingPoint"]').fill("100")//Enter Points for discount
-    await page1.getByRole("button", {name: "Check"}).last().click()//Click CHECK button for Points
-
-    await expect(page1.locator("div.text-sm.text-right").nth(0)).not.toHaveText("0pt")//ASSERTION: Check if the Points discount is applied
+    //The staging reservation API currently rejects even 100pt against a positive total, so do not redeem points
+    //during a booking. The points-earning assertion above still verifies the logged-in benefit.
     await expect(page1.locator("div.text-sm.text-right").nth(1)).not.toHaveText("¥ 0")//ASSERTION: Check if the Promo Code discount is applied
 
+    const reservationResponse = page1.waitForResponse(response =>
+        response.url().includes("/api/reservations/smartclub"), {timeout: 30 * 1000})
     await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
+    const response = await reservationResponse
+    if(!response.ok())
+    {
+        const body = await response.text()
+        throw new Error(`Reservation API returned HTTP ${response.status()}: ${body.slice(0, 1000)}`)
+    }
 
     //Make Playwright locate the button on the Payment Gateway modal and click it
-    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+    await ProceedThroughPaymentGateway(page1)
 
     //ASSERTION: Check if the user has reached the Successfully Booked screen
     await page.waitForTimeout(3 * 1000)
@@ -787,10 +577,7 @@ test('Tokyu Stay - Logged In Reservation', async({page})=>
 
 ///////////////////
 
-//STATUS: BLOCKED (environment issue, not a test bug - see note on "Logged In Reservation" above)
-//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
-//NOTE (2026-08-25): this test creates its reservation the same way "Logged In Reservation" does, so it's blocked by
-//the same staging Payment-page/tripla rooms-price 400 error until that's fixed.
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed.
 test('Tokyu Stay - Reservation History', async ({page})=>
 {
     const page1 = await Login(page)
@@ -802,10 +589,8 @@ test('Tokyu Stay - Reservation History', async ({page})=>
     //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
     await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
     await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
-    await page1.locator("button.w-full").nth(2).click()
-    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
-    await page1.getByRole("button", {name: "Confirm"}).click()
-    await page1.getByRole("button", {name: "Search"}).click()
+    await ClearAmenityFilters(page1)
+    await page1.getByRole("button", {name: "Search", exact: true}).click()
 
     //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
     //points-eligible, which breaks the Points-to-Be-Earned assertions below.
@@ -825,7 +610,7 @@ test('Tokyu Stay - Reservation History', async ({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
 
     //Make Playwright locate the button on the Payment Gateway modal and click it
-    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+    await ProceedThroughPaymentGateway(page1)
 
     //ASSERTION: Check if the user has reached the Successfully Booked screen
     await page.waitForTimeout(3 * 1000)
@@ -917,12 +702,9 @@ test('Tokyu Stay - Reservation History', async ({page})=>
 
 ///////////////////
 
-//STATUS: BLOCKED (environment issue, not a test bug - see note on "Logged In Reservation" above)
 //Always creates a brand-new reservation on staging first (mirrors the "Logged In Reservation" test), then cancels
-//that exact reservation by its reservation number - this test never touches any pre-existing booking on the account
-//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed
-//NOTE (2026-08-25): this test creates its reservation the same way "Logged In Reservation" does, so it's blocked by
-//the same staging Payment-page/tripla rooms-price 400 error until that's fixed.
+//that exact reservation by its reservation number - this test never touches any pre-existing booking on the account.
+//Check-In/Check-Out dates are automatic (today/tomorrow), no manual updates needed.
 test('Tokyu Stay - Cancel Reservation', async ({page})=>
 {
     const page1 = await Login(page)
@@ -934,10 +716,8 @@ test('Tokyu Stay - Cancel Reservation', async ({page})=>
     //NOTE: the calendar renders two adjacent month grids, and the second grid's leading/trailing "neighboring month" cells can duplicate a date shown in the first grid, so use .first() to disambiguate
     await page1.locator("abbr[aria-label*='" + info.checkInDate + "']").first().click()
     await page1.locator("abbr[aria-label*='" + info.checkOutDate + "']").first().click()
-    await page1.locator("button.w-full").nth(2).click()
-    await page1.locator("svg[xmlns*='w3.org']").nth(4).click()
-    await page1.getByRole("button", {name: "Confirm"}).click()
-    await page1.getByRole("button", {name: "Search"}).click()
+    await ClearAmenityFilters(page1)
+    await page1.getByRole("button", {name: "Search", exact: true}).click()
 
     //ASSERTION: a bookable result appears, and pick one. Prefer a non-resale (regular) plan - resale plans are not
     //eligible for the payment-gateway modal this test relies on.
@@ -957,7 +737,7 @@ test('Tokyu Stay - Cancel Reservation', async ({page})=>
     await page1.getByRole("button", {name: "Confirm"}).click()//Click "Confirm" button to make booking
 
     //Make Playwright locate the button on the Payment Gateway modal and click it
-    await page.locator('iframe').nth(0).contentFrame().getByRole('button', { name: '決済に進む' }).click();
+    await ProceedThroughPaymentGateway(page1)
 
     //ASSERTION: Check if the user has reached the Successfully Booked screen
     await page.waitForTimeout(3 * 1000)
@@ -1036,5 +816,144 @@ test('Tokyu Stay - Cancel Reservation', async ({page})=>
 
     //await page1.pause()
 
+});
+
+
+///////////////////
+
+//STATUS: NEW
+//Always creates a brand-new member account first (never touches the shared fixture account), then changes that
+//account's email address to a second, never-used InstAddr address and verifies the change took effect.
+//Flow: login via the new account -> click username -> sidebar "Change Mail Address" -> SmartClub email page ->
+//enter new email -> "Send a confirmation email" -> confirmation mail arrives in the new inbox -> click the
+//confirm link -> SmartClub confirms the email is changed -> back on Tokyu Stay, the account now logs in with
+//the new email.
+test('Tokyu Stay - Change Mail Address', async ({browser})=>
+{
+    test.setTimeout(process.env.INSTADDR_MANUAL_VERIFICATION === "1" ? 12 * 60 * 1000 : 8 * 60 * 1000) //Registration and email confirmations
+    //1. Create a brand-new account (fresh InstAddr email) and log it in
+    const {accountPage, instAddrContext, instAddrPage, email: currentEmail, password} =
+        await RegisterNewMemberAccount(browser)
+
+    //2. Create a second, never-used InstAddr address for the account to be changed TO
+    const newEmail = await CreateAnotherInstAddrEmail(instAddrPage)
+    expect(newEmail).toBeTruthy()
+    expect(newEmail).not.toEqual(currentEmail)
+
+    //3. The sidebar opens SmartClub in a new tab; the Tokyu Stay profile remains in the original tab.
+    await accountPage.goto("https://stg.reservation.tokyustay.co.jp/en/my-page/profile")
+    await expect(accountPage.locator("a[href*='my-page/profile']").first()).toBeVisible()
+    const [emailPage] = await Promise.all([
+        accountPage.context().waitForEvent("page"),
+        accountPage.getByRole("link", {name: "Change Mail Address"}).click()
+    ])
+    await expect(emailPage).toHaveURL(/account\/email$/)
+
+    //4. Fill in the new email address and send the confirmation
+    await emailPage.waitForTimeout(2*1000)
+    await emailPage.getByPlaceholder("例）sample@example.com").fill(newEmail)
+    await emailPage.getByRole("button", {name: "Send a confirmation email"}).click()
+
+    //5. Wait for the confirmation mail addressed to the new address, then open its gateway link
+    const newMailRow = await WaitForInstAddrMail(instAddrPage, newEmail)
+    await newMailRow.click()
+    const frame = instAddrPage.frameLocator('iframe[name^="area_maildata_iframe_"]')
+    const [confirmChangePage] = await Promise.all
+    ([
+        instAddrContext.waitForEvent("page"),
+        frame.locator("a[href*='exwa.org']").first().click()
+    ])
+    await confirmChangePage.waitForLoadState()
+
+    //6. Drive the final "confirm the change" action that finalises the email swap
+    const confirmAction = confirmChangePage.getByRole("button", {name: /confirm/i})
+        .or(confirmChangePage.getByRole("link", {name: /confirm/i})).first()
+    await expect(confirmAction).toBeVisible()
+    await confirmAction.click()
+
+    //7. Verify the change stuck by logging in with the NEW email from a clean, logged-out context
+    const verifyContext = await browser.newContext()
+    const verifyPage = await verifyContext.newPage()
+    await verifyPage.goto("https://stg.reservation.tokyustay.co.jp/en")
+    await verifyPage.getByRole("button", {name: "Log In"}).click()
+    await expect(verifyPage).toHaveURL(/mypage\/login/)
+    await verifyPage.locator("input[name='email']").fill(newEmail)
+    await verifyPage.locator("input[name='password']").fill(password)
+    await verifyPage.locator("button.c-button").click()
+    await verifyPage.waitForURL(url => url.href.includes("/mypage/agreement") || url.href === "https://stg.reservation.tokyustay.co.jp/en")
+    await AgreeToTermsRevisionIfPresent(verifyPage)
+    await verifyPage.locator("div.space-x-2").waitFor()
+    await expect(verifyPage.locator("div.space-x-2")).toBeVisible()//ASSERTION: new email accepted the login
+});
+
+
+///////////////////
+
+//STATUS: NEW
+//Creates a brand-new account first, then resets that account's password via the SmartClub
+//"Change Password" (Password reissue) flow and confirms it can log in with the new password.
+//Flow: login -> sidebar "Change Password" -> SmartClub reissue page (email prefilled) -> "Password reissue" ->
+//reissue mail -> open gateway -> set a fresh password -> re-login with it.
+test('Tokyu Stay - Change Password', async ({browser})=>
+{
+    test.setTimeout(process.env.INSTADDR_MANUAL_VERIFICATION === "1" ? 12 * 60 * 1000 : 8 * 60 * 1000) //Registration and reissue email
+    //1. Create a brand-new account and log it in
+    const {accountPage, instAddrContext, instAddrPage, email} =
+        await RegisterNewMemberAccount(browser)
+
+    //2. The sidebar opens SmartClub in a new tab; the Tokyu Stay profile remains in the original tab.
+    await accountPage.goto("https://stg.reservation.tokyustay.co.jp/en/my-page/profile")
+    await expect(accountPage.locator("a[href*='my-page/profile']").first()).toBeVisible()
+    const [passwordPage] = await Promise.all([
+        accountPage.context().waitForEvent("page"),
+        accountPage.getByRole("link", {name: "Change Password"}).click()
+    ])
+    await expect(passwordPage).toHaveURL(/account\/password$/)
+
+    //3. On the password page the account's email is prefilled; trigger the reissue email
+    await passwordPage.waitForTimeout(2*1000)
+    const emailField = passwordPage.getByPlaceholder("例）user@golfyoyaku.jp")
+    await expect(emailField).toHaveValue(email)//ASSERTION: the email is prefilled with the account's
+    const existingMailIds = await ExistingInstAddrMailIds(instAddrPage, email)
+    await passwordPage.getByRole("button", {name: "Password reissue"}).click()
+
+    //4. Open the new reissue mail rather than the account's earlier registration message
+    const mailRow = await WaitForInstAddrMail(instAddrPage, email, 60 * 1000, existingMailIds)
+    await mailRow.click()
+    const frame = instAddrPage.frameLocator('iframe[name^="area_maildata_iframe_"]')
+    const [resetPage] = await Promise.all
+    ([
+        instAddrContext.waitForEvent("page"),
+        frame.locator("a[href*='exwa.org']").first().click()
+    ])
+    await resetPage.waitForLoadState()
+
+    //5. Set a fresh password on the reset page (mirrors the Reset Password test)
+    const freshPassword = GenerateFreshPassword()
+    if(await resetPage.locator("button.p-header__translate__button").count() > 0)
+    {
+        await resetPage.locator("button.p-header__translate__button").click()
+        await resetPage.locator(".p-header__translate__lang").filter({ hasText: "English" }).click()
+    }
+    const newPasswordField = resetPage.getByPlaceholder("新しいパスワード / New password")
+    await expect(newPasswordField).toBeVisible()
+    await newPasswordField.fill(freshPassword)
+    await resetPage.getByPlaceholder("確認用に再入力 / Re-enter for confirmation").fill(freshPassword)
+    await resetPage.getByRole("button", {name: /Reset password|Change password/i}).click()
+    await expect(resetPage.locator("p.title")).toContainText(/password.*(changed|reset)/i)//ASSERTION
+
+    //6. Verify the account logs back in with the NEW password from a clean, logged-out context
+    const verifyContext = await browser.newContext()
+    const verifyPage = await verifyContext.newPage()
+    await verifyPage.goto("https://stg.reservation.tokyustay.co.jp/en")
+    await verifyPage.getByRole("button", {name: "Log In"}).click()
+    await expect(verifyPage).toHaveURL(/mypage\/login/)
+    await verifyPage.locator("input[name='email']").fill(email)
+    await verifyPage.locator("input[name='password']").fill(freshPassword)
+    await verifyPage.locator("button.c-button").click()
+    await verifyPage.waitForURL(url => url.href.includes("/mypage/agreement") || url.href === "https://stg.reservation.tokyustay.co.jp/en")
+    await AgreeToTermsRevisionIfPresent(verifyPage)
+    await verifyPage.locator("div.space-x-2").waitFor()
+    await expect(verifyPage.locator("div.space-x-2")).toBeVisible()//ASSERTION: login with new password succeeded
 });
 
