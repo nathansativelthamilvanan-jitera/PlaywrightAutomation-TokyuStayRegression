@@ -13,7 +13,7 @@ const config = ({
   use:
   {
     browser: 'chromium',
-    headless: false,
+    headless: true,
     screenshot: 'on',
 
   },
